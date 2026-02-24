@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HabitFlow – Theo dõi thói quen hàng ngày</title>
+    <meta name="description" content="Ứng dụng theo dõi thói quen hàng ngày với Google Sheets làm database." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+        rel="stylesheet" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="style.css" />
+</head>
+
+<body>
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <div class="logo">
+                <span class="logo-icon">⚡</span>
+                <span class="logo-text">HabitFlow</span>
+            </div>
+            <button class="sidebar-close" id="sidebarClose"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+
+        <nav class="sidebar-nav">
+            <a href="#" class="nav-item active" data-page="dashboard">
+                <i class="fa-solid fa-gauge-high"></i>
+                <span>Dashboard</span>
+            </a>
+            <a href="#" class="nav-item" data-page="habits">
+                <i class="fa-solid fa-list-check"></i>
+                <span>Thói quen</span>
+            </a>
+            <a href="#" class="nav-item" data-page="stats">
+                <i class="fa-solid fa-chart-line"></i>
+                <span>Thống kê</span>
+            </a>
+            <a href="#" class="nav-item" data-page="settings">
+                <i class="fa-solid fa-gear"></i>
+                <span>Cài đặt</span>
+            </a>
+        </nav>
+
+        <div class="sidebar-footer">
+            <div class="user-card">
+                <div class="user-avatar">🧑</div>
+                <div class="user-info">
+                    <div class="user-name" id="userName">Người dùng</div>
+                    <div class="user-tier" id="userXP">0 XP</div>
+                </div>
+            </div>
+            <div class="xp-bar-wrap">
+                <div class="xp-bar" id="xpBar" style="width:0%"></div>
+            </div>
+            <div class="xp-label">XP ĐẾN LEVEL TIẾP THEO</div>
+        </div>
+    </aside>
+
+    <!-- Overlay -->
+    <div class="overlay" id="overlay"></div>
+
+    <!-- Main content -->
+    <main class="main-content">
+        <!-- Top bar -->
+        <header class="topbar">
+            <div class="topbar-left">
+                <button class="menu-btn" id="menuBtn"><i class="fa-solid fa-bars"></i></button>
+                <div class="page-title" id="pageTitle">
+                    <h1>Dashboard</h1>
+                    <p id="todayDate"></p>
+                </div>
+            </div>
+            <div class="topbar-right">
+                <div class="view-switcher">
+                    <button class="view-btn active" id="btnMonthly">Tháng</button>
+                    <button class="view-btn" id="btnWeekly">Tuần</button>
+                </div>
+                <div class="nav-arrows">
+                    <button id="prevPeriod"><i class="fa-solid fa-chevron-left"></i></button>
+                    <button class="today-btn" id="gotoToday">Hôm nay</button>
+                    <button id="nextPeriod"><i class="fa-solid fa-chevron-right"></i></button>
+                </div>
+                <button class="add-habit-btn" id="openAddHabit">
+                    <i class="fa-solid fa-plus"></i> Thói quen mới
+                </button>
+            </div>
+        </header>
+
+        <!-- Loading overlay -->
+        <div class="loading-overlay" id="loadingOverlay">
+            <div class="spinner"></div>
+            <p>Đang tải dữ liệu...</p>
+        </div>
+
+        <!-- API Config Banner (shown when not configured) -->
+        <div class="api-banner" id="apiBanner">
+            <div class="api-banner-content">
+                <i class="fa-brands fa-google"></i>
+                <div>
+                    <strong>Chưa kết nối Google Apps Script API</strong>
+                    <p>Vào trang <a href="#settings" class="nav-item" data-page="settings">Cài đặt</a> để nhập URL API
+                        của bạn.</p>
+                </div>
+                <button onclick="showPage('settings')" class="btn-configure">Cấu hình ngay</button>
+            </div>
+        </div>
+
+        <!-- ====== PAGE: DASHBOARD ====== -->
+        <section class="page active" id="page-dashboard">
+            <div class="dashboard-content">
+                <!-- 1. Header & Greeting -->
+                <div class="dashboard-welcome">
+                    <div class="welcome-text">
+                        <h2 id="greetingMsg">Chào ngày mới, <span class="user-name-val">Người dùng</span>! 👋</h2>
+                        <p id="dashTodayDate" class="text-muted">Thứ bảy, 22 tháng 2, 2026</p>
+                    </div>
+                </div>
+
+                <!-- 2. Daily Summaries (Last 7 Days) -->
+                <div class="dashboard-daily-summaries">
+                    <div class="panel-header-inline">
+                        <h3>Daily Summaries</h3>
+                        <div class="summary-legend">
+                            <span class="legend-item"><i class="fa-solid fa-circle" style="color: var(--accent)"></i>
+                                Hôm nay</span>
+                            <span class="legend-item"><i class="fa-solid fa-circle" style="color: var(--green)"></i>
+                                Quá khứ</span>
+                            <span class="legend-item"><i class="fa-solid fa-circle" style="color: #06b6d4"></i>
+                                Tương lai</span>
+                        </div>
+                    </div>
+                    <div class="daily-cards-container" id="dailySummariesContainer">
+                        <!-- JS render here -->
+                    </div>
+                </div>
+
+                <!-- 3. Summary Strip (Quick Stats) -->
+                <div class="dashboard-summary">
+                    <div class="summary-card">
+                        <div class="summary-icon" style="background: rgba(99, 102, 241, 0.1); color: var(--accent);">🎯
+                        </div>
+                        <div class="summary-info">
+                            <span class="summary-lbl">HOÀN THÀNH</span>
+                            <span class="summary-val" id="dashTodayPct">0%</span>
+                        </div>
+                        <div class="summary-chart">
+                            <canvas id="goalCircle" width="50" height="50"></canvas>
+                        </div>
+                    </div>
+                    <div class="summary-card">
+                        <div class="summary-icon" style="background: rgba(245, 158, 11, 0.1); color: var(--amber);">🔥
+                        </div>
+                        <div class="summary-info">
+                            <span class="summary-lbl">CHUỖI NGÀY</span>
+                            <span class="summary-val" id="dashCurrentStreak">0 Ngày</span>
+                        </div>
+                    </div>
+                    <div class="summary-card">
+                        <div class="summary-icon" style="background: rgba(16, 185, 129, 0.1); color: var(--green);">✨
+                        </div>
+                        <div class="summary-info">
+                            <span class="summary-lbl">LEVEL HIỆN TẠI</span>
+                            <span class="summary-val" id="dashLevel">Cấp 1</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 3. Main Content: Today's Tasks & Quote -->
+                <div class="dashboard-upper-grid">
+                    <!-- Left: Tasks Execution -->
+                    <div class="panel-card habits-execution-card">
+                        <div class="panel-header-inline">
+                            <h3>Nhiệm vụ hôm nay</h3>
+                            <span id="todayProgress" class="progress-badge">0/0</span>
+                        </div>
+                        <div class="today-habits grid-view" id="todayHabits">
+                            <div class="empty-state-sm">Chưa có thói quen nào</div>
+                        </div>
+                    </div>
+
+                    <!-- Right: Motivational Quote -->
+                    <div class="panel-card quote-card dashboard-quote">
+                        <h3>💡 Câu nói hôm nay</h3>
+                        <p class="quote-text" id="dailyQuote">"""</p>
+                        <p class="quote-author" id="dailyQuoteAuthor">—</p>
+                    </div>
+                </div>
+
+                <!-- 4. Middle Content: Habit Consistency & Discipline Rank -->
+                <div class="dashboard-middle-grid">
+                    <!-- Left: Consistency Tracker -->
+                    <div class="panel-card consistency-card">
+                        <div class="panel-header-inline">
+                            <h3>Habit Consistency</h3>
+                            <button class="btn-icon-sm" title="Bộ lọc"><i class="fa-solid fa-sliders"></i></button>
+                        </div>
+                        <div class="consistency-list" id="dashConsistencyList">
+                            <!-- JS render here -->
+                        </div>
+                    </div>
+
+                    <!-- Right: Rank Card -->
+                    <div class="rank-card">
+                        <div class="rank-icon-box">
+                            <i class="fa-solid fa-star"></i>
+                        </div>
+
+                        <div class="rank-info-main">
+                            <h3>Discipline Rank</h3>
+                            <p class="rank-name" id="rankName">Elite Performer</p>
+                        </div>
+
+                        <div class="rank-level-stat">
+                            <div class="rank-level-row">
+                                <span id="rankLevel">Level 1</span>
+                                <span id="rankXPText">0 / 0 XP</span>
+                            </div>
+                            <div class="rank-progress-bg">
+                                <div class="rank-progress-fill" id="rankProgressBar" style="width: 0%"></div>
+                            </div>
+                        </div>
+
+                        <div class="rank-milestone">
+                            <p class="milestone-lbl">NEXT MILESTONE</p>
+                            <p class="milestone-name" id="nextMilestone">"Iron Will" Badge</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 5. Lower Content: Full Width Analytics Chart -->
+                <div class="dashboard-lower-analytics">
+                    <div class="panel-card chart-full-card">
+                        <div class="panel-header-inline">
+                            <h3>Tiến độ thói quen 30 ngày gần nhất</h3>
+                            <p class="panel-sub">Biểu thị tỷ lệ hoàn thành trung bình của tất cả thói quen</p>
+                        </div>
+                        <div class="chart-wrap large-chart">
+                            <canvas id="statsChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ====== PAGE: HABITS ====== -->
+        <section class="page" id="page-habits">
+            <div class="habits-page">
+                <div class="habits-toolbar">
+                    <div class="search-wrap">
+                        <i class="fa-solid fa-search"></i>
+                        <input type="text" id="habitSearch" placeholder="Tìm kiếm thói quen..." />
+                    </div>
+                    <button class="add-habit-btn" id="openAddHabit2">
+                        <i class="fa-solid fa-plus"></i> Thêm thói quen
+                    </button>
+                </div>
+                <div class="habits-list" id="habitsList">
+                    <!-- Filled by JS -->
+                </div>
+            </div>
+        </section>
+
+        <!-- ====== PAGE: STATS ====== -->
+        <section class="page" id="page-stats">
+            <div class="stats-page">
+                <!-- Monthly History (Moved from Dashboard) -->
+                <div class="history-section">
+                    <div class="calendar-header">
+                        <div class="cal-nav">
+                            <h2 id="calendarTitle">Lịch sử thói quen</h2>
+                            <div class="cal-btns">
+                                <button onclick="navigatePeriod(-1)" class="btn-cal"><i
+                                        class="fa-solid fa-chevron-left"></i></button>
+                                <button onclick="state.currentDate = new Date(); renderCalendar();"
+                                    class="btn-cal-today">Hôm nay</button>
+                                <button onclick="navigatePeriod(1)" class="btn-cal"><i
+                                        class="fa-solid fa-chevron-right"></i></button>
+                            </div>
+                        </div>
+                        <div class="view-switcher">
+                            <button id="btnMonthly" class="active" onclick="setView('monthly')">Tháng</button>
+                            <button id="btnWeekly" onclick="setView('weekly')">Tuần</button>
+                        </div>
+                    </div>
+                    <div class="calendar-container" id="calendarContainer">
+                        <!-- Filled by JS -->
+                    </div>
+                </div>
+
+                <div class="stats-cards-row">
+                    <div class="stat-big-card">
+                        <div class="stat-icon" style="background: #6366f120">💪</div>
+                        <div class="stat-info">
+                            <div class="stat-value" id="statTotalHabits">0</div>
+                            <div class="stat-label">Thói quen đang theo dõi</div>
+                        </div>
+                    </div>
+                    <div class="stat-big-card">
+                        <div class="stat-icon" style="background: #10b98120">🔥</div>
+                        <div class="stat-info">
+                            <div class="stat-value" id="statStreak">0</div>
+                            <div class="stat-label">Chuỗi ngày hiện tại</div>
+                        </div>
+                    </div>
+                    <div class="stat-big-card">
+                        <div class="stat-icon" style="background: #f59e0b20">⭐</div>
+                        <div class="stat-info">
+                            <div class="stat-value" id="statScore">0%</div>
+                            <div class="stat-label">Consistency Score</div>
+                        </div>
+                    </div>
+                    <div class="stat-big-card">
+                        <div class="stat-icon" style="background: #ec489920">🎯</div>
+                        <div class="stat-info">
+                            <div class="stat-value" id="statTotalDone">0</div>
+                            <div class="stat-label">Tổng lần hoàn thành (30 ngày)</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="consistency-section">
+                    <div class="panel-card consistency-card">
+                        <div class="panel-header-inline">
+                            <h3>Habit Consistency (30 Days)</h3>
+                            <p class="panel-sub">Theo dõi mức độ duy trì của từng thói quen</p>
+                        </div>
+                        <div class="consistency-list" id="habitConsistencyList">
+                            <!-- Filled by JS -->
+                        </div>
+                    </div>
+                </div>
+
+                <div class="habit-streaks">
+                    <div class="panel-card">
+                        <h3>Chuỗi ngày theo từng thói quen</h3>
+                        <div id="streaksList"></div>
+                    </div>
+                </div>
+
+                <div class="badges-section">
+                    <div class="panel-card">
+                        <h3>🏆 Danh hiệu của bạn</h3>
+                        <p class="panel-sub">Hoàn thành thử thách để mở khóa thêm nhiều danh hiệu mới!</p>
+                        <div class="badges-grid" id="badgesContainer">
+                            <!-- Badges will be rendered here -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ====== PAGE: SETTINGS ====== -->
+        <section class="page" id="page-settings">
+            <div class="settings-page">
+                <div class="panel-card settings-card">
+                    <h3><i class="fa-brands fa-google"></i> Kết nối Google Apps Script</h3>
+                    <p class="setting-desc">Dán URL Web App của Google Apps Script vào đây để kết nối dữ liệu.</p>
+                    <div class="setting-row">
+                        <label>API URL</label>
+                        <div class="setting-input-row">
+                            <input type="url" id="apiUrlInput"
+                                placeholder="https://script.google.com/macros/s/.../exec" />
+                            <button class="btn-save" id="saveApiUrl">Lưu</button>
+                        </div>
+                    </div>
+                    <div class="api-status" id="apiStatus"></div>
+                    <button class="btn-test" id="testApiBtn">
+                        <i class="fa-solid fa-vial"></i> Kiểm tra kết nối
+                    </button>
+                </div>
+
+                <div class="panel-card settings-card">
+                    <h3><i class="fa-solid fa-user"></i> Hồ sơ</h3>
+                    <div class="setting-row">
+                        <label>Tên hiển thị</label>
+                        <input type="text" id="displayNameInput" placeholder="Nhập tên của bạn" />
+                    </div>
+                    <button class="btn-save" id="saveProfile">Lưu hồ sơ</button>
+                </div>
+
+                <div class="panel-card settings-card">
+                    <h3><i class="fa-solid fa-circle-info"></i> Hướng dẫn nhanh</h3>
+                    <ol class="guide-list">
+                        <li>Mở <a href="https://docs.google.com/spreadsheets/create" target="_blank">Google Sheets</a> →
+                            Tạo spreadsheet mới</li>
+                        <li>Sao chép <strong>Spreadsheet ID</strong> từ URL</li>
+                        <li>Mở <strong>Extensions → Apps Script</strong></li>
+                        <li>Dán nội dung file <code>Code.gs</code> vào editor</li>
+                        <li>Thay <code>YOUR_SPREADSHEET_ID_HERE</code> bằng ID của bạn</li>
+                        <li>Chạy hàm <code>setupSheets()</code> một lần để tạo cấu trúc</li>
+                        <li>Click <strong>Deploy → New deployment → Web App</strong></li>
+                        <li>Chọn <em>"Execute as: Me"</em> và <em>"Who has access: Anyone"</em></li>
+                        <li>Sao chép URL và dán vào ô API URL ở trên</li>
+                    </ol>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Modal: Add/Edit Habit -->
+    <div class="modal-overlay" id="habitModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 id="modalTitle">Thêm thói quen mới</h3>
+                <button class="modal-close" id="closeModal"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Tên thói quen</label>
+                    <input type="text" id="habitName" placeholder="Ví dụ: Uống 2L nước mỗi ngày" />
+                </div>
+                <div class="form-group">
+                    <label>Biểu tượng (emoji)</label>
+                    <div class="emoji-picker" id="emojiPicker">
+                        <span class="emoji-opt selected" data-emoji="⭐">⭐</span>
+                        <span class="emoji-opt" data-emoji="🏃">🏃</span>
+                        <span class="emoji-opt" data-emoji="💪">💪</span>
+                        <span class="emoji-opt" data-emoji="🧘">🧘</span>
+                        <span class="emoji-opt" data-emoji="📚">📚</span>
+                        <span class="emoji-opt" data-emoji="💧">💧</span>
+                        <span class="emoji-opt" data-emoji="🥗">🥗</span>
+                        <span class="emoji-opt" data-emoji="😴">😴</span>
+                        <span class="emoji-opt" data-emoji="✍️">✍️</span>
+                        <span class="emoji-opt" data-emoji="🎯">🎯</span>
+                        <span class="emoji-opt" data-emoji="🎵">🎵</span>
+                        <span class="emoji-opt" data-emoji="🌱">🌱</span>
+                    </div>
+                    <input type="text" id="habitIcon" placeholder="Hoặc nhập emoji tùy chỉnh" />
+                </div>
+                <div class="form-group">
+                    <label>Màu sắc</label>
+                    <div class="color-picker" id="colorPicker">
+                        <span class="color-opt selected" data-color="#6366f1" style="background:#6366f1"></span>
+                        <span class="color-opt" data-color="#10b981" style="background:#10b981"></span>
+                        <span class="color-opt" data-color="#f59e0b" style="background:#f59e0b"></span>
+                        <span class="color-opt" data-color="#ec4899" style="background:#ec4899"></span>
+                        <span class="color-opt" data-color="#3b82f6" style="background:#3b82f6"></span>
+                        <span class="color-opt" data-color="#ef4444" style="background:#ef4444"></span>
+                        <span class="color-opt" data-color="#8b5cf6" style="background:#8b5cf6"></span>
+                        <span class="color-opt" data-color="#06b6d4" style="background:#06b6d4"></span>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" id="cancelModal">Huỷ</button>
+                <button class="btn-confirm" id="confirmHabit">
+                    <i class="fa-solid fa-check"></i> Lưu thói quen
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Confirm Modal -->
+    <div class="modal-overlay" id="confirmModal">
+        <div class="modal-content confirm-modal-content">
+            <div class="modal-header">
+                <h3 id="confirmTitle">Xác nhận xoá</h3>
+                <button class="modal-close" onclick="closeConfirmModal()"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body">
+                <p id="confirmMessage">Bạn có chắc chắn muốn thực hiện hành động này không?</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" onclick="closeConfirmModal()">Huỷ</button>
+                <button class="btn-confirm danger" id="btnConfirmAction">
+                    <i class="fa-solid fa-trash"></i> Đồng ý xoá
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast notification -->
+    <div class="toast" id="toast"></div>
+
+    <script src="app.js"></script>
+</body>
+
+</html>
