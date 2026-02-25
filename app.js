@@ -814,7 +814,7 @@ function renderDailySummaries() {
                     </div>
                     <div class="today-glow-wrapper">
                         <div class="today-glow-ring">
-                            <svg width="${circSize}" height="${circSize}" viewBox="0 0 ${circSize} ${circSize}">
+                            <svg width="100%" height="100%" viewBox="0 0 ${circSize} ${circSize}">
                                 <defs>
                                     <filter id="glowFilter" x="-50%" y="-50%" width="200%" height="200%">
                                         <feGaussianBlur stdDeviation="4" result="blur"/>
