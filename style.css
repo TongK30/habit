@@ -2497,3 +2497,401 @@ body {
         grid-template-columns: 1fr;
     }
 }
+
+/* ══════════════════════════════════════════════════════
+   COMPREHENSIVE RESPONSIVE - All Devices
+   ══════════════════════════════════════════════════════ */
+
+/* ── LARGE DESKTOP (≤1440px) ─── */
+@media (max-width: 1440px) {
+    .daily-card {
+        min-width: 100px;
+    }
+}
+
+/* ── TABLET LANDSCAPE (≤1024px) ─── */
+@media (max-width: 1024px) {
+
+    /* Daily Summaries: TODAY + 2 hàng 3 cột */
+    .daily-cards-container {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 12px;
+        overflow-x: visible;
+    }
+
+    .daily-card.today {
+        grid-column: 1 / -1;
+        min-width: unset;
+        flex: unset;
+    }
+
+    .daily-card {
+        min-width: unset;
+        flex: unset;
+    }
+
+    .today-glow-ring {
+        width: 100px;
+        height: 100px;
+    }
+
+
+
+    .glow-pct {
+        font-size: 22px;
+    }
+}
+
+/* ── TABLET PORTRAIT (≤768px) ─── */
+@media (max-width: 768px) {
+
+    /* Welcome */
+    #greetingMsg {
+        font-size: 20px;
+    }
+
+    .dashboard-content {
+        gap: 16px;
+    }
+
+    /* Panel Header */
+    .panel-header-inline {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 8px;
+    }
+
+    .summary-legend {
+        gap: 10px;
+        flex-wrap: wrap;
+    }
+
+    /* Daily Cards: 2 columns + today full width */
+    .daily-cards-container {
+        grid-template-columns: repeat(3, 1fr);
+        gap: 10px;
+    }
+
+    .daily-card {
+        padding: 10px;
+        border-radius: 12px;
+        gap: 6px;
+    }
+
+    .daily-card.today {
+        padding: 14px;
+    }
+
+    .daily-day-name {
+        font-size: 9px;
+    }
+
+    .daily-date {
+        font-size: 12px;
+    }
+
+    .daily-card.today .daily-date {
+        font-size: 14px;
+    }
+
+    .daily-status-icon {
+        font-size: 12px;
+    }
+
+    /* Glow ring smaller on tablet */
+    .today-glow-ring {
+        width: 90px;
+        height: 90px;
+    }
+
+
+
+    .glow-pct {
+        font-size: 20px;
+    }
+
+    .glow-points {
+        font-size: 14px;
+    }
+
+    .glow-label {
+        font-size: 8px;
+    }
+
+    /* Small circles for other days */
+    .daily-progress-circle {
+        width: 36px;
+        height: 36px;
+    }
+
+    .daily-progress-circle .pct {
+        font-size: 8px;
+    }
+
+    .daily-card-stats {
+        display: none;
+    }
+
+    /* Summary strip */
+    .dashboard-summary {
+        grid-template-columns: 1fr;
+        gap: 10px;
+    }
+
+    .summary-card {
+        padding: 12px 16px;
+    }
+
+    /* Quote card */
+    .dashboard-quote {
+        padding: 16px;
+    }
+
+    .quote-text {
+        font-size: 14px;
+    }
+
+    /* Rank card */
+    .rank-card {
+        padding: 20px;
+    }
+
+    /* Consistency */
+    .consistency-card {
+        padding: 16px;
+    }
+}
+
+/* ── MOBILE (≤576px) ─── */
+@media (max-width: 576px) {
+    .page {
+        padding: 12px;
+    }
+
+    #greetingMsg {
+        font-size: 18px;
+    }
+
+    /* Daily Cards: TODAY đầu tiên full-width, còn lại 3 cột */
+    .daily-cards-container {
+        grid-template-columns: repeat(3, 1fr);
+        gap: 8px;
+    }
+
+    .daily-card.today {
+        grid-column: 1 / -1;
+        padding: 12px;
+    }
+
+    .daily-card {
+        padding: 8px;
+        border-radius: 10px;
+        gap: 4px;
+    }
+
+    /* Glow ring compact */
+    .today-glow-wrapper {
+        flex-direction: row;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+    }
+
+    .today-glow-ring {
+        width: 80px;
+        height: 80px;
+    }
+
+
+
+    .glow-pct {
+        font-size: 18px;
+    }
+
+    .glow-points {
+        font-size: 14px;
+    }
+
+    .today-glow-stats {
+        align-items: flex-start;
+    }
+
+    /* Small day circles */
+    .daily-progress-circle {
+        width: 32px;
+        height: 32px;
+    }
+
+    .daily-progress-circle .pct {
+        font-size: 7px;
+    }
+
+    .daily-card-body {
+        justify-content: center;
+    }
+
+    /* Header text */
+    .daily-day-name {
+        font-size: 8px;
+        letter-spacing: 0.3px;
+    }
+
+    .daily-date {
+        font-size: 11px;
+        font-weight: 600;
+    }
+
+    .daily-card.today .daily-date {
+        font-size: 13px;
+    }
+
+    .daily-status-icon {
+        font-size: 10px;
+    }
+
+    /* Legend smaller */
+    .summary-legend {
+        gap: 8px;
+    }
+
+    .legend-item {
+        font-size: 10px;
+    }
+
+    .legend-item i {
+        font-size: 6px;
+    }
+
+    /* Topbar */
+    .topbar {
+        padding: 10px 12px;
+    }
+
+    .topbar-title h2 {
+        font-size: 16px;
+    }
+
+    .topbar-right {
+        gap: 4px;
+    }
+
+    /* Summary strip */
+    .summary-lbl {
+        font-size: 10px;
+    }
+
+    .summary-val {
+        font-size: 14px;
+    }
+}
+
+/* ── SMALL MOBILE (≤420px) ─── */
+@media (max-width: 420px) {
+    #greetingMsg {
+        font-size: 16px;
+    }
+
+    /* Daily: 2 cột cho ngày thường */
+    .daily-cards-container {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 6px;
+    }
+
+    .daily-card.today {
+        grid-column: 1 / -1;
+    }
+
+    .daily-card {
+        padding: 6px;
+        border-radius: 8px;
+    }
+
+    .daily-card-header {
+        gap: 2px;
+    }
+
+    .daily-day-name {
+        font-size: 7px;
+    }
+
+    .daily-date {
+        font-size: 10px;
+    }
+
+    /* Glow ring even smaller */
+    .today-glow-ring {
+        width: 70px;
+        height: 70px;
+    }
+
+
+
+    .glow-pct {
+        font-size: 16px;
+    }
+
+    .glow-points {
+        font-size: 12px;
+    }
+
+    .glow-label {
+        font-size: 7px;
+        letter-spacing: 1px;
+        padding: 1px 6px;
+    }
+
+    /* Progress circle tiny */
+    .daily-progress-circle {
+        width: 28px;
+        height: 28px;
+    }
+
+    .daily-progress-circle .pct {
+        font-size: 6px;
+    }
+
+    .page {
+        padding: 8px;
+    }
+
+    .topbar-title h2 {
+        font-size: 14px;
+    }
+
+    .topbar-date {
+        font-size: 11px;
+    }
+}
+
+/* ── TINY SCREEN (≤360px) ─── */
+@media (max-width: 360px) {
+    #greetingMsg {
+        font-size: 14px;
+    }
+
+    .daily-cards-container {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 4px;
+    }
+
+    .daily-card {
+        padding: 5px;
+    }
+
+    .today-glow-wrapper {
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .today-glow-ring {
+        width: 64px;
+        height: 64px;
+    }
+
+
+
+    .glow-pct {
+        font-size: 14px;
+    }
+}
