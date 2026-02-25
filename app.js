@@ -309,8 +309,26 @@ async function loadData() {
                 return { ...sh, active: localH ? localH.active : true };
             });
 
-            // ✅ MERGE COMPLETIONS (như cũ)
-            state.completions = mergeCompletions(data.completions || [], state.completions);
+            // ✅ MERGE COMPLETIONS - normalize dates from API
+            const apiCompletions = (data.completions || []).map(c => {
+                // Google Sheets có thể trả Date object hoặc string khác format
+                let dateStr = c.date;
+                if (dateStr && dateStr.includes('T')) {
+                    // ISO string: "2026-02-24T00:00:00.000Z" → "2026-02-24"
+                    dateStr = dateStr.split('T')[0];
+                } else if (dateStr && !dateStr.match(/^\d{4}-\d{2}-\d{2}$/)) {
+                    // Nếu là format khác (e.g. "Mon Feb 24 2026") → parse lại
+                    try {
+                        const d = new Date(dateStr);
+                        if (!isNaN(d.getTime())) {
+                            dateStr = formatDate(d);
+                        }
+                    } catch { /* giữ nguyên */ }
+                }
+                return { ...c, date: dateStr };
+            }).filter(c => c.date && c.date.match(/^\d{4}-\d{2}-\d{2}$/));
+
+            state.completions = mergeCompletions(apiCompletions, state.completions);
 
             state.stats = data.stats || null;
             saveCache();
@@ -338,14 +356,24 @@ async function loadData() {
  *
  * Quy tắc:
  *  - Lấy TẤT CẢ từ API (dữ liệu đã confirmed trên Sheets).
- *  - Giữ lại những item trong cache mà API CHƯA CÓ
+ *  - CHỈ giữ lại item cache nếu nó đang PENDING trong syncQueue
  *    → đây là những tick vừa click chưa kịp sync lên Sheets.
+ *  - KHÔNG giữ item cache cũ đã bị xóa trên server.
  *
- * Kết quả: tick không bao giờ biến mất sau refresh.
+ * Kết quả: Khi xóa dữ liệu trên server → level reset đúng.
+ *          Khi tick offline → giữ lại cho đến khi sync xong.
  */
 function mergeCompletions(fromAPI, fromCache) {
     const apiKeys = new Set(fromAPI.map(c => `${c.habitId}_${c.date}`));
-    const pendingLocal = fromCache.filter(c => !apiKeys.has(`${c.habitId}_${c.date}`));
+
+    // Chỉ giữ local items đang chờ sync (pending in queue)
+    const pendingKeys = new Set(syncQueue.map(q => `${q.habitId}_${q.date}`));
+    const pendingLocal = fromCache.filter(c => {
+        const key = `${c.habitId}_${c.date}`;
+        // Giữ nếu: chưa có trên API VÀ đang pending sync
+        return !apiKeys.has(key) && pendingKeys.has(key);
+    });
+
     return [...fromAPI, ...pendingLocal];
 }
 
@@ -1187,6 +1215,12 @@ function updateXP() {
 
     const xpNeeded = level * 100;
     const progress = Math.min(100, (tempXp / xpNeeded) * 100);
+
+    // Reset badges nếu không còn completion nào
+    if (totalDone === 0 && state.unlockedBadges.length > 0) {
+        state.unlockedBadges = [];
+        localStorage.setItem('habitflow_badges', JSON.stringify([]));
+    }
 
     // Sidebar & Sidebar stats
     const userXPEl = document.getElementById('userXP');
