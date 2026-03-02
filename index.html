@@ -39,6 +39,10 @@
                 <i class="fa-solid fa-chart-line"></i>
                 <span>Thống kê</span>
             </a>
+            <a href="#" class="nav-item" data-page="focus">
+                <i class="fa-solid fa-crosshairs"></i>
+                <span>Tập trung</span>
+            </a>
             <a href="#" class="nav-item" data-page="settings">
                 <i class="fa-solid fa-gear"></i>
                 <span>Cài đặt</span>
@@ -138,7 +142,43 @@
                     </div>
                 </div>
 
-
+                <!-- Focus Contribution Graph (Yearly) -->
+                <div class="panel-card dash-contrib-card">
+                    <div class="panel-header-inline">
+                        <h3><i class="fa-solid fa-fire" style="color: #06b6d4; margin-right: 8px;"></i>Focus Activity
+                        </h3>
+                        <span class="contrib-total" id="dashContribTotal">0 phiên trong năm qua</span>
+                    </div>
+                    <div class="contrib-graph-scroll">
+                        <div class="contrib-graph">
+                            <div class="contrib-day-labels">
+                                <span></span>
+                                <span>T2</span>
+                                <span></span>
+                                <span>T4</span>
+                                <span></span>
+                                <span>T6</span>
+                                <span></span>
+                            </div>
+                            <div class="contrib-grid-area">
+                                <div class="contrib-month-labels" id="dashContribMonthLabels"></div>
+                                <div class="contrib-grid" id="dashContribGrid"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="contrib-footer">
+                        <span class="contrib-learn-more">52 tuần gần nhất</span>
+                        <div class="contrib-legend">
+                            <span>Ít</span>
+                            <div class="contrib-legend-box lv0"></div>
+                            <div class="contrib-legend-box lv1"></div>
+                            <div class="contrib-legend-box lv2"></div>
+                            <div class="contrib-legend-box lv3"></div>
+                            <div class="contrib-legend-box lv4"></div>
+                            <span>Nhiều</span>
+                        </div>
+                    </div>
+                </div>
 
                 <!-- 3. Main Content: Today's Tasks & Quote -->
                 <div class="dashboard-upper-grid">
@@ -161,7 +201,47 @@
                     </div>
                 </div>
 
-                <!-- 4. Middle Content: Habit Consistency & Discipline Rank -->
+                <!-- 4. Dashboard Notes Section (ngay dưới Nhiệm vụ hôm nay) -->
+                <div class="dashboard-notes-section">
+                    <div class="panel-card notes-panel">
+                        <div class="panel-header-inline">
+                            <h3><i class="fa-solid fa-book-open"
+                                    style="color: var(--accent); margin-right: 6px;"></i>Ghi chú hôm nay</h3>
+                            <button class="btn-icon-sm notes-view-all" id="viewAllNotes" title="Xem tất cả">
+                                <i class="fa-solid fa-expand"></i>
+                            </button>
+                        </div>
+
+                        <!-- Quick Note Input -->
+                        <div class="quick-note-box" id="quickNoteBox">
+                            <div class="quick-note-header">
+                                <span class="quick-note-date" id="quickNoteDate"></span>
+                                <div class="quick-mood-picker" id="quickMoodPicker">
+                                    <span class="quick-mood" data-mood="😊" title="Vui vẻ">😊</span>
+                                    <span class="quick-mood" data-mood="😌" title="Bình yên">😌</span>
+                                    <span class="quick-mood" data-mood="😐" title="Bình thường">😐</span>
+                                    <span class="quick-mood" data-mood="😔" title="Buồn">😔</span>
+                                    <span class="quick-mood" data-mood="🤩" title="Hưng phấn">🤩</span>
+                                    <span class="quick-mood" data-mood="😴" title="Mệt mỏi">😴</span>
+                                </div>
+                            </div>
+                            <div class="quick-note-input-row">
+                                <textarea id="quickNoteInput" rows="2"
+                                    placeholder="Hôm nay bạn cảm thấy thế nào? Viết nhanh ghi chú..."></textarea>
+                                <button class="quick-note-save" id="quickNoteSave" title="Lưu ghi chú">
+                                    <i class="fa-solid fa-paper-plane"></i>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Recent Notes List -->
+                        <div class="notes-list" id="dashboardNotesList">
+                            <!-- JS render -->
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 5. Middle Content: Habit Consistency & Discipline Rank -->
                 <div class="dashboard-middle-grid">
                     <!-- Left: Consistency Tracker -->
                     <div class="panel-card consistency-card">
@@ -202,7 +282,7 @@
                     </div>
                 </div>
 
-                <!-- 5. Lower Content: Full Width Analytics Chart -->
+                <!-- 6. Lower Content: Full Width Analytics Chart -->
                 <div class="dashboard-lower-analytics">
                     <div class="panel-card chart-full-card">
                         <div class="panel-header-inline">
@@ -370,7 +450,677 @@
                 </div>
             </div>
         </section>
+
+        <!-- ====== PAGE: FOCUS TIMER ====== -->
+        <section class="page" id="page-focus">
+            <div class="focus-page">
+                <!-- XP Status Bar -->
+                <div class="focus-xp-bar">
+                    <div class="xp-level-badge" id="xpLevelBadge">
+                        <span class="xp-level-num" id="xpLevelNum">1</span>
+                        <span class="xp-level-label">LVL</span>
+                    </div>
+                    <div class="xp-progress-wrap">
+                        <div class="xp-progress-info">
+                            <span class="xp-label">Focus XP</span>
+                            <span class="xp-values"><span id="xpCurrent">0</span> / <span id="xpNeeded">100</span>
+                                XP</span>
+                        </div>
+                        <div class="xp-progress-track">
+                            <div class="xp-progress-fill" id="xpProgressFill" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div class="xp-stats">
+                        <div class="xp-stat">
+                            <i class="fa-solid fa-bolt"></i>
+                            <span id="xpTotalPoints">0</span>
+                            <small>FP</small>
+                        </div>
+                        <div class="xp-stat">
+                            <i class="fa-solid fa-fire"></i>
+                            <span id="xpTotalSessions">0</span>
+                            <small>Sessions</small>
+                        </div>
+                        <div class="xp-stat">
+                            <i class="fa-solid fa-clock"></i>
+                            <span id="xpTotalTime">0h</span>
+                            <small>Focus</small>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- XP Gain Popup (animated) -->
+                <div class="xp-gain-popup" id="xpGainPopup">
+                    <i class="fa-solid fa-star"></i>
+                    <span id="xpGainAmount">+50 XP</span>
+                </div>
+
+                <div class="focus-layout">
+                    <!-- LEFT: Mode Selector -->
+                    <div class="focus-modes-panel">
+                        <h4 class="focus-modes-title">MODES</h4>
+                        <button class="focus-mode-btn active" data-mode="deepwork" id="modeDeepWork">
+                            <i class="fa-solid fa-brain"></i>
+                            <span>Deep Work</span>
+                            <div class="mode-time-edit">
+                                <input type="number" class="mode-time-input" id="timeDeepWork" value="25" min="1"
+                                    max="120" title="Phút" />
+                                <small>phút</small>
+                            </div>
+                        </button>
+                        <button class="focus-mode-btn" data-mode="shortbreak" id="modeShortBreak">
+                            <i class="fa-solid fa-mug-hot"></i>
+                            <span>Short Break</span>
+                            <div class="mode-time-edit">
+                                <input type="number" class="mode-time-input" id="timeShortBreak" value="5" min="1"
+                                    max="60" title="Phút" />
+                                <small>phút</small>
+                            </div>
+                        </button>
+                        <button class="focus-mode-btn" data-mode="longbreak" id="modeLongBreak">
+                            <i class="fa-solid fa-bed"></i>
+                            <span>Long Break</span>
+                            <div class="mode-time-edit">
+                                <input type="number" class="mode-time-input" id="timeLongBreak" value="15" min="1"
+                                    max="60" title="Phút" />
+                                <small>phút</small>
+                            </div>
+                        </button>
+                        <button class="focus-mode-btn" data-mode="custom" id="modeCustom">
+                            <i class="fa-solid fa-sliders"></i>
+                            <span>Custom</span>
+                            <div class="mode-time-edit">
+                                <input type="number" class="mode-time-input" id="timeCustom" value="45" min="1"
+                                    max="180" title="Phút" />
+                                <small>phút</small>
+                            </div>
+                        </button>
+
+                        <!-- Session Target -->
+                        <div class="focus-session-target">
+                            <span class="session-target-label">Session Target</span>
+                            <div class="session-target-value">
+                                <span id="focusSessionsDone">0</span> / <span id="focusSessionsGoal">4</span> Focus
+                                Sessions
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- CENTER: Timer -->
+                    <div class="focus-timer-area">
+                        <div class="focus-timer-card">
+                            <h2 class="focus-session-title" id="focusSessionTitle">Deep Work Session</h2>
+                            <p class="focus-session-subtitle" id="focusSessionSubtitle">Stay focused for 25 minutes</p>
+
+                            <!-- Circular Timer -->
+                            <div class="focus-timer-ring-wrap">
+                                <svg class="focus-timer-svg" viewBox="0 0 280 280">
+                                    <circle class="timer-track" cx="140" cy="140" r="126" />
+                                    <circle class="timer-progress" id="timerProgress" cx="140" cy="140" r="126" />
+                                    <circle class="timer-glow" id="timerGlow" cx="140" cy="140" r="126" />
+                                </svg>
+                                <div class="focus-timer-display">
+                                    <span class="focus-time" id="focusTimeDisplay">25:00</span>
+                                </div>
+                            </div>
+
+                            <!-- Controls -->
+                            <div class="focus-controls">
+                                <button class="focus-btn-start" id="focusBtnStart">
+                                    <i class="fa-solid fa-play"></i> START
+                                </button>
+                                <button class="focus-btn-reset" id="focusBtnReset">
+                                    RESET
+                                </button>
+                            </div>
+
+                            <!-- Session Progress Dots -->
+                            <div class="focus-session-dots" id="focusSessionDots">
+                                <!-- JS render -->
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- RIGHT: Reward Preview + Analytics -->
+                    <div class="focus-reward-panel">
+                        <!-- Reward Preview -->
+                        <div class="reward-preview-card">
+                            <div class="reward-preview-header">
+                                <h4><i class="fa-solid fa-gift"></i> Reward Preview</h4>
+                                <button class="reward-edit-btn" id="openRewardPool">Edit Pool</button>
+                            </div>
+                            <div class="reward-items-list" id="rewardPreviewList">
+                                <!-- JS render -->
+                            </div>
+                        </div>
+
+                        <!-- Drop Rate Analytics -->
+                        <div class="drop-rate-card">
+                            <h4>DROP RATE ANALYTICS</h4>
+                            <div class="drop-rate-bars" id="dropRateBars">
+                                <!-- JS render -->
+                            </div>
+                            <div class="luck-bonus">
+                                <div class="luck-bonus-row">
+                                    <span>Luck Bonus</span>
+                                    <span class="luck-value" id="luckBonusValue">+0%</span>
+                                </div>
+                                <p class="luck-desc">Completing Session 4 triggers a Super Gacha roll.</p>
+                            </div>
+                        </div>
+
+                        <!-- Pro Tip -->
+                        <div class="focus-pro-tip">
+                            <div class="pro-tip-badge"><i class="fa-solid fa-lightbulb"></i> Pro Tip</div>
+                            <p id="focusProTip">Deep work sessions longer than 45m increase Legendary drop rates by 6%.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Focus Music Section -->
+                <div class="focus-music-section">
+                    <div class="panel-card">
+                        <div class="panel-header-inline">
+                            <h3><i class="fa-solid fa-headphones" style="color: #06b6d4; margin-right: 8px;"></i>Nhạc
+                                tập trung</h3>
+                            <div class="music-header-actions">
+                                <button class="btn-icon-sm music-minimize-btn" id="musicMinimize" title="Thu nhỏ">
+                                    <i class="fa-solid fa-chevron-up"></i>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="music-content" id="musicContent">
+                            <!-- Add Music Link -->
+                            <div class="music-add-row">
+                                <div class="music-input-group">
+                                    <i class="fa-brands fa-youtube music-input-icon"></i>
+                                    <input type="text" id="musicLinkInput"
+                                        placeholder="Dán link YouTube (VD: https://youtube.com/watch?v=...)" />
+                                </div>
+                                <input type="text" id="musicNameInput" placeholder="Tên bài (tuỳ chọn)"
+                                    class="music-name-input" />
+                                <button class="music-add-btn" id="addMusicBtn">
+                                    <i class="fa-solid fa-plus"></i> Thêm
+                                </button>
+                            </div>
+
+                            <!-- Player + Playlist Grid -->
+                            <div class="music-grid">
+                                <!-- Embedded Player -->
+                                <div class="music-player-wrap">
+                                    <div class="music-player-empty" id="musicPlayerEmpty">
+                                        <i class="fa-solid fa-music"></i>
+                                        <p>Chọn bài nhạc từ playlist hoặc thêm link YouTube mới</p>
+                                    </div>
+                                    <div class="music-player-frame" id="musicPlayerFrame" style="display:none;">
+                                        <iframe id="musicIframe" width="100%" height="100%" frameborder="0"
+                                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                                            allowfullscreen></iframe>
+                                    </div>
+                                    <div class="music-now-playing" id="musicNowPlaying" style="display:none;">
+                                        <i class="fa-solid fa-compact-disc fa-spin"></i>
+                                        <span id="musicNowPlayingName">Đang phát...</span>
+                                    </div>
+                                </div>
+
+                                <!-- Playlist -->
+                                <div class="music-playlist-wrap">
+                                    <div class="music-playlist-header">
+                                        <h4><i class="fa-solid fa-list-ul"></i> Playlist</h4>
+                                        <span class="music-playlist-count" id="musicPlaylistCount">0 bài</span>
+                                    </div>
+                                    <div class="music-playlist" id="musicPlaylist">
+                                        <div class="music-playlist-empty">
+                                            <i class="fa-regular fa-face-smile"></i>
+                                            <p>Thêm nhạc yêu thích để tập trung tốt hơn!</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Suggested Links -->
+                            <div class="music-suggestions">
+                                <h4><i class="fa-solid fa-wand-magic-sparkles"></i> Gợi ý nhạc tập trung</h4>
+                                <div class="music-suggestion-chips" id="musicSuggestions">
+                                    <button class="music-chip" data-url="https://www.youtube.com/watch?v=jfKfPfyJRdk"
+                                        data-name="lofi hip hop - beats to relax/study to">
+                                        🎵 Lofi Hip Hop Radio
+                                    </button>
+                                    <button class="music-chip" data-url="https://www.youtube.com/watch?v=4xDzrJKXOOY"
+                                        data-name="Classical Music for Studying">
+                                        🎻 Classical Study Music
+                                    </button>
+                                    <button class="music-chip" data-url="https://www.youtube.com/watch?v=lTRiuFIWV54"
+                                        data-name="3 Hour Study Music">
+                                        📖 3H Study Music
+                                    </button>
+                                    <button class="music-chip" data-url="https://www.youtube.com/watch?v=7NOSDKb0HlU"
+                                        data-name="Deep Focus - Ambient Music for Studying">
+                                        🧠 Deep Focus Ambient
+                                    </button>
+                                    <button class="music-chip" data-url="https://www.youtube.com/watch?v=77ZozI0rw7w"
+                                        data-name="Coffee Shop Ambience">
+                                        ☕ Coffee Shop Ambience
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Ambient Sound Mixer -->
+                <div class="ambient-mixer-section">
+                    <div class="panel-card">
+                        <div class="panel-header-inline">
+                            <h3><i class="fa-solid fa-sliders" style="color: #8b5cf6; margin-right: 8px;"></i>Ambient
+                                Sound Mixer</h3>
+                            <div class="ambient-header-actions">
+                                <button class="btn-icon-sm ambient-minimize-btn" id="ambientMinimize" title="Thu nhỏ">
+                                    <i class="fa-solid fa-chevron-up"></i>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="ambient-content" id="ambientContent">
+                            <!-- Presets -->
+                            <div class="ambient-presets">
+                                <span class="ambient-presets-label">Presets:</span>
+                                <button class="ambient-preset-btn" data-preset="rainforest">🌿 Rain Forest</button>
+                                <button class="ambient-preset-btn" data-preset="coffeeshop">☕ Coffee Shop</button>
+                                <button class="ambient-preset-btn" data-preset="beach">🏖️ Beach</button>
+                                <button class="ambient-preset-btn" data-preset="library">📚 Library</button>
+                                <button class="ambient-preset-btn" data-preset="storm">⛈️ Storm Night</button>
+                                <button class="ambient-preset-btn ambient-stop-all" data-preset="off">
+                                    <i class="fa-solid fa-power-off"></i> Tắt hết
+                                </button>
+                            </div>
+
+                            <!-- Sound Channels Grid -->
+                            <div class="ambient-channels-grid">
+                                <div class="ambient-channel" data-sound="rain">
+                                    <button class="ambient-toggle" id="toggleRain">
+                                        <span class="ambient-icon">🌧️</span>
+                                    </button>
+                                    <div class="ambient-info">
+                                        <span class="ambient-name">Rain</span>
+                                        <input type="range" class="ambient-slider" id="volRain" min="0" max="100"
+                                            value="60" />
+                                    </div>
+                                </div>
+
+                                <div class="ambient-channel" data-sound="thunder">
+                                    <button class="ambient-toggle" id="toggleThunder">
+                                        <span class="ambient-icon">⛈️</span>
+                                    </button>
+                                    <div class="ambient-info">
+                                        <span class="ambient-name">Thunder</span>
+                                        <input type="range" class="ambient-slider" id="volThunder" min="0" max="100"
+                                            value="40" />
+                                    </div>
+                                </div>
+
+                                <div class="ambient-channel" data-sound="fire">
+                                    <button class="ambient-toggle" id="toggleFire">
+                                        <span class="ambient-icon">🔥</span>
+                                    </button>
+                                    <div class="ambient-info">
+                                        <span class="ambient-name">Fireplace</span>
+                                        <input type="range" class="ambient-slider" id="volFire" min="0" max="100"
+                                            value="50" />
+                                    </div>
+                                </div>
+
+                                <div class="ambient-channel" data-sound="ocean">
+                                    <button class="ambient-toggle" id="toggleOcean">
+                                        <span class="ambient-icon">🌊</span>
+                                    </button>
+                                    <div class="ambient-info">
+                                        <span class="ambient-name">Ocean Waves</span>
+                                        <input type="range" class="ambient-slider" id="volOcean" min="0" max="100"
+                                            value="50" />
+                                    </div>
+                                </div>
+
+                                <div class="ambient-channel" data-sound="birds">
+                                    <button class="ambient-toggle" id="toggleBirds">
+                                        <span class="ambient-icon">🐦</span>
+                                    </button>
+                                    <div class="ambient-info">
+                                        <span class="ambient-name">Birds</span>
+                                        <input type="range" class="ambient-slider" id="volBirds" min="0" max="100"
+                                            value="40" />
+                                    </div>
+                                </div>
+
+                                <div class="ambient-channel" data-sound="wind">
+                                    <button class="ambient-toggle" id="toggleWind">
+                                        <span class="ambient-icon">🌬️</span>
+                                    </button>
+                                    <div class="ambient-info">
+                                        <span class="ambient-name">Wind</span>
+                                        <input type="range" class="ambient-slider" id="volWind" min="0" max="100"
+                                            value="45" />
+                                    </div>
+                                </div>
+
+                                <div class="ambient-channel" data-sound="cafe">
+                                    <button class="ambient-toggle" id="toggleCafe">
+                                        <span class="ambient-icon">☕</span>
+                                    </button>
+                                    <div class="ambient-info">
+                                        <span class="ambient-name">Café Chatter</span>
+                                        <input type="range" class="ambient-slider" id="volCafe" min="0" max="100"
+                                            value="35" />
+                                    </div>
+                                </div>
+
+                                <div class="ambient-channel" data-sound="crickets">
+                                    <button class="ambient-toggle" id="toggleCrickets">
+                                        <span class="ambient-icon">🦗</span>
+                                    </button>
+                                    <div class="ambient-info">
+                                        <span class="ambient-name">Night Crickets</span>
+                                        <input type="range" class="ambient-slider" id="volCrickets" min="0" max="100"
+                                            value="40" />
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Master Volume -->
+                            <div class="ambient-master">
+                                <i class="fa-solid fa-volume-high"></i>
+                                <span>Master Volume</span>
+                                <input type="range" class="ambient-slider master" id="ambientMasterVol" min="0"
+                                    max="100" value="70" />
+                                <span class="ambient-master-pct" id="ambientMasterPct">70%</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Daily Focus Tracker -->
+                <div class="daily-focus-section">
+                    <div class="panel-card">
+                        <div class="panel-header-inline">
+                            <h3><i class="fa-solid fa-calendar-days" style="color: #10b981; margin-right: 8px;"></i>Tổng
+                                quan tập trung</h3>
+                        </div>
+
+                        <!-- Today Summary -->
+                        <div class="daily-today-summary" id="dailyTodaySummary">
+                            <div class="daily-today-label">
+                                <i class="fa-solid fa-sun"></i>
+                                <span>Hôm nay</span>
+                                <span class="daily-today-date" id="dailyTodayDate"></span>
+                            </div>
+                            <div class="daily-today-stats">
+                                <div class="daily-stat-card">
+                                    <span class="daily-stat-val" id="dailyTodaySessions">0</span>
+                                    <small>Phiên</small>
+                                </div>
+                                <div class="daily-stat-card">
+                                    <span class="daily-stat-val" id="dailyTodayTime">0m</span>
+                                    <small>Thời gian</small>
+                                </div>
+                                <div class="daily-stat-card">
+                                    <span class="daily-stat-val" id="dailyTodayXP">0</span>
+                                    <small>XP</small>
+                                </div>
+                                <div class="daily-stat-card">
+                                    <span class="daily-stat-val" id="dailyTodayPoints">0</span>
+                                    <small>FP</small>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Monthly Focus Contribution Graph -->
+                        <div class="contrib-graph-wrap">
+                            <div class="contrib-graph-header">
+                                <div class="contrib-month-nav">
+                                    <button class="daily-nav-btn" id="focusContribPrev"><i
+                                            class="fa-solid fa-chevron-left"></i></button>
+                                    <span class="contrib-month-title" id="focusContribMonthLabel">Tháng 3, 2026</span>
+                                    <button class="daily-nav-btn" id="focusContribNext"><i
+                                            class="fa-solid fa-chevron-right"></i></button>
+                                </div>
+                                <span class="contrib-total" id="contribTotal">0 phiên</span>
+                            </div>
+                            <div class="contrib-graph-scroll">
+                                <div class="contrib-graph">
+                                    <div class="contrib-day-labels">
+                                        <span></span>
+                                        <span>T2</span>
+                                        <span></span>
+                                        <span>T4</span>
+                                        <span></span>
+                                        <span>T6</span>
+                                        <span></span>
+                                    </div>
+                                    <div class="contrib-grid-area">
+                                        <div class="contrib-month-labels" id="contribMonthLabels"></div>
+                                        <div class="contrib-grid" id="contribGrid"></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="contrib-footer">
+                                <span class="contrib-learn-more" id="contribMonthStats"></span>
+                                <div class="contrib-legend">
+                                    <span>Ít</span>
+                                    <div class="contrib-legend-box lv0"></div>
+                                    <div class="contrib-legend-box lv1"></div>
+                                    <div class="contrib-legend-box lv2"></div>
+                                    <div class="contrib-legend-box lv3"></div>
+                                    <div class="contrib-legend-box lv4"></div>
+                                    <span>Nhiều</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Weekly Bar Chart -->
+                        <div class="daily-weekly-wrap">
+                            <h4>Tuần này</h4>
+                            <div class="daily-weekly-chart" id="dailyWeeklyChart">
+                                <!-- JS render -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Focus History -->
+                <div class="focus-history-section">
+                    <div class="panel-card">
+                        <div class="panel-header-inline">
+                            <h3><i class="fa-solid fa-clock-rotate-left"
+                                    style="color: var(--accent); margin-right: 8px;"></i>Lịch sử tập trung</h3>
+                            <button class="btn-icon-sm" id="clearFocusHistory" title="Xóa lịch sử"><i
+                                    class="fa-solid fa-trash"></i></button>
+                        </div>
+                        <div class="focus-history-list" id="focusHistoryList">
+                            <div class="empty-state-sm">Chưa có phiên tập trung nào</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Floating Focus Menu (Right Side) -->
+            <div class="focus-float-menu" id="focusFloatMenu">
+                <!-- Toggle expand -->
+                <button class="ffm-toggle" id="ffmToggle" title="Focus Tools">
+                    <i class="fa-solid fa-bolt"></i>
+                </button>
+
+                <div class="ffm-items" id="ffmItems">
+                    <!-- Quick Timer Control -->
+                    <button class="ffm-btn ffm-play" id="ffmPlayPause" title="Bắt đầu / Tạm dừng">
+                        <i class="fa-solid fa-play"></i>
+                        <span>Play / Pause</span>
+                    </button>
+
+                    <button class="ffm-btn" id="ffmReset" title="Reset Timer">
+                        <i class="fa-solid fa-rotate-right"></i>
+                        <span>Reset Timer</span>
+                    </button>
+
+                    <div class="ffm-divider"></div>
+
+                    <!-- Scroll to section -->
+                    <button class="ffm-btn" data-scroll="focus-layout" title="Timer">
+                        <i class="fa-solid fa-clock"></i>
+                        <span>Timer</span>
+                    </button>
+
+                    <button class="ffm-btn" data-scroll="focus-music-section" title="Nhạc">
+                        <i class="fa-solid fa-headphones"></i>
+                        <span>Nhạc</span>
+                    </button>
+
+                    <button class="ffm-btn" data-scroll="ambient-mixer-section" title="Ambient">
+                        <i class="fa-solid fa-sliders"></i>
+                        <span>Ambient</span>
+                    </button>
+
+                    <button class="ffm-btn" data-scroll="focus-history-section" title="Lịch sử">
+                        <i class="fa-solid fa-clock-rotate-left"></i>
+                        <span>Lịch sử</span>
+                    </button>
+
+                    <div class="ffm-divider"></div>
+
+                    <!-- Quick Ambient Presets -->
+                    <button class="ffm-btn ffm-ambient" data-ambient="rainforest" title="Rain Forest">
+                        <i class="fa-solid fa-leaf"></i>
+                        <span>Rain Forest</span>
+                    </button>
+
+                    <button class="ffm-btn ffm-ambient" data-ambient="coffeeshop" title="Coffee Shop">
+                        <i class="fa-solid fa-mug-saucer"></i>
+                        <span>Coffee Shop</span>
+                    </button>
+
+                    <button class="ffm-btn ffm-ambient" data-ambient="off" title="Tắt âm">
+                        <i class="fa-solid fa-volume-xmark"></i>
+                        <span>Tắt âm</span>
+                    </button>
+                </div>
+            </div>
+        </section>
     </main>
+
+    <!-- Modal: Edit Reward Pool -->
+    <div class="modal-overlay" id="rewardPoolModal">
+        <div class="modal reward-pool-modal">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-gift"></i> Chỉnh sửa phần thưởng</h3>
+                <button class="modal-close" id="closeRewardPool"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body">
+                <p class="reward-pool-desc">Thêm phần thưởng bạn muốn nhận sau khi hoàn thành phiên tập trung. Mỗi phần
+                    thưởng có độ hiếm khác nhau!</p>
+
+                <div class="reward-add-form">
+                    <input type="text" id="rewardNameInput" placeholder="Tên phần thưởng (VD: 15p chơi game)" />
+                    <input type="text" id="rewardIconInput" placeholder="Emoji (VD: 🎮)" maxlength="4" />
+                    <select id="rewardRarityInput">
+                        <option value="common">Common (50%)</option>
+                        <option value="uncommon">Uncommon (25%)</option>
+                        <option value="rare">Rare (15%)</option>
+                        <option value="legendary">Legendary (10%)</option>
+                    </select>
+                    <button class="btn-confirm" id="addRewardBtn"><i class="fa-solid fa-plus"></i> Thêm</button>
+                </div>
+
+                <div class="reward-pool-list" id="rewardPoolList">
+                    <!-- JS render -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" id="cancelRewardPool">Đóng</button>
+                <button class="btn-confirm" id="saveRewardPool"><i class="fa-solid fa-check"></i> Lưu</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Reward Spin Wheel -->
+    <div class="modal-overlay" id="spinWheelModal">
+        <div class="spin-wheel-modal-content">
+            <div class="spin-left-panel">
+                <div class="spin-session-complete">
+                    <span class="spin-label">SESSION COMPLETE</span>
+                    <h1 class="spin-title">Excellent Focus!</h1>
+                    <p class="spin-desc">You maintained flow for the entire duration. Ready for your reward?</p>
+                </div>
+
+                <div class="spin-stats-cards">
+                    <div class="spin-stat-card">
+                        <i class="fa-solid fa-clock"></i>
+                        <div>
+                            <span class="spin-stat-label">Time Focused</span>
+                            <span class="spin-stat-value" id="spinTimeFocused">25:00</span>
+                            <span class="spin-stat-xp" id="spinXPGained">+10% XP</span>
+                        </div>
+                    </div>
+                    <div class="spin-stat-card">
+                        <i class="fa-solid fa-bolt"></i>
+                        <div>
+                            <span class="spin-stat-label">Focus Points</span>
+                            <span class="spin-stat-value" id="spinFocusPoints">+50</span>
+                            <span class="spin-stat-xp">Bonus Active</span>
+                        </div>
+                    </div>
+                </div>
+
+                <button class="spin-view-history-btn" id="spinViewHistory">
+                    <i class="fa-solid fa-clock-rotate-left"></i> View History
+                </button>
+            </div>
+
+            <div class="spin-center-panel">
+                <div class="spin-wheel-container">
+                    <canvas id="spinWheelCanvas" width="420" height="420"></canvas>
+                    <button class="spin-btn" id="spinBtn">
+                        <span>SPIN</span>
+                        <small id="spinCharges">1 CHARGE</small>
+                    </button>
+                    <div class="spin-pointer"></div>
+                </div>
+                <div class="spin-reward-level">
+                    <span>Session Reward Level</span>
+                    <div class="spin-stars" id="spinStars">
+                        <i class="fa-solid fa-star"></i>
+                        <i class="fa-regular fa-star"></i>
+                        <i class="fa-regular fa-star"></i>
+                    </div>
+                </div>
+            </div>
+
+            <div class="spin-right-panel">
+                <button class="spin-close-btn" id="closeSpinWheel"><i class="fa-solid fa-xmark"></i></button>
+                <h4>Possible Rewards</h4>
+                <div class="spin-possible-rewards" id="spinPossibleRewards">
+                    <!-- JS render -->
+                </div>
+                <div class="spin-pro-tip">
+                    <div class="pro-tip-badge"><i class="fa-solid fa-lightbulb"></i> PRO TIP</div>
+                    <p>Focus sessions longer than 50 minutes guarantee a <strong style="color: #06b6d4">Rare</strong>
+                        reward or higher on your next spin!</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Reward Won Toast Overlay -->
+    <div class="reward-won-overlay" id="rewardWonOverlay">
+        <div class="reward-won-card">
+            <div class="reward-won-confetti"></div>
+            <h2>🎉 Phần thưởng!</h2>
+            <div class="reward-won-icon" id="rewardWonIcon">🎮</div>
+            <h3 class="reward-won-name" id="rewardWonName">15p chơi game</h3>
+            <span class="reward-won-rarity" id="rewardWonRarity">COMMON</span>
+            <button class="btn-confirm" id="claimRewardBtn">🎁 Nhận thưởng!</button>
+        </div>
+    </div>
 
     <!-- Modal: Add/Edit Habit -->
     <div class="modal-overlay" id="habitModal">
@@ -440,6 +1190,167 @@
                 <button class="btn-confirm danger" id="btnConfirmAction">
                     <i class="fa-solid fa-trash"></i> Đồng ý xoá
                 </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Daily Journal -->
+    <div class="modal-overlay" id="journalModal">
+        <div class="modal journal-modal">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-book-open"></i> <span id="journalTitle">Nhật ký ngày</span></h3>
+                <button class="modal-close" id="closeJournal"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body">
+                <div class="journal-date-display" id="journalDateDisplay"></div>
+
+                <div class="form-group">
+                    <label>Tâm trạng hôm nay</label>
+                    <div class="mood-picker" id="moodPicker">
+                        <span class="mood-opt" data-mood="😊" title="Vui vẻ">😊</span>
+                        <span class="mood-opt" data-mood="😌" title="Bình yên">😌</span>
+                        <span class="mood-opt" data-mood="😐" title="Bình thường">😐</span>
+                        <span class="mood-opt" data-mood="😔" title="Buồn">😔</span>
+                        <span class="mood-opt" data-mood="😤" title="Khó chịu">😤</span>
+                        <span class="mood-opt" data-mood="🤩" title="Hưng phấn">🤩</span>
+                        <span class="mood-opt" data-mood="😴" title="Mệt mỏi">😴</span>
+                        <span class="mood-opt" data-mood="🥰" title="Hạnh phúc">🥰</span>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Ghi chú nhanh</label>
+                    <textarea id="journalContent" rows="4"
+                        placeholder="Hôm nay bạn cảm thấy thế nào? Có điều gì đặc biệt không?"></textarea>
+                </div>
+
+                <div class="journal-stats" id="journalStats"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" id="deleteJournal" style="color: var(--danger)">
+                    <i class="fa-solid fa-trash"></i> Xóa
+                </button>
+                <button class="btn-confirm" id="confirmJournal">
+                    <i class="fa-solid fa-floppy-disk"></i> Lưu ghi chú
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- FULLSCREEN FOCUS MODE -->
+    <div class="focus-fullscreen" id="focusFullscreen">
+        <!-- Animated Background -->
+        <canvas id="focusParticles" class="focus-fs-particles"></canvas>
+        <div class="focus-fs-gradient"></div>
+
+        <!-- Top Bar -->
+        <div class="focus-fs-top">
+            <div class="focus-fs-mode-badge" id="fsModeLabel">
+                <i class="fa-solid fa-brain"></i>
+                <span>Deep Work Session</span>
+            </div>
+            <div class="focus-fs-top-right">
+                <div class="focus-fs-ambient-badge" id="fsAmbientBadge" style="display:none;">
+                    <i class="fa-solid fa-headphones"></i>
+                    <span id="fsAmbientName">Ambient</span>
+                </div>
+                <button class="focus-fs-exit" id="fsExit" title="Thoát (ESC)">
+                    <i class="fa-solid fa-compress"></i>
+                </button>
+            </div>
+        </div>
+
+        <!-- Center: Timer -->
+        <div class="focus-fs-center">
+            <div class="focus-fs-ring-wrap">
+                <svg class="focus-fs-svg" viewBox="0 0 300 300">
+                    <circle class="fs-timer-track" cx="150" cy="150" r="140" />
+                    <circle class="fs-timer-progress" id="fsTimerProgress" cx="150" cy="150" r="140" />
+                    <circle class="fs-timer-glow" id="fsTimerGlow" cx="150" cy="150" r="140" />
+                </svg>
+                <div class="focus-fs-time-display">
+                    <div class="focus-fs-time" id="fsTimeDisplay">25:00</div>
+                    <div class="focus-fs-subtitle" id="fsSubtitle">Stay focused</div>
+                </div>
+            </div>
+
+            <!-- Controls -->
+            <div class="focus-fs-controls">
+                <button class="focus-fs-ctrl-btn" id="fsResetBtn" title="Reset">
+                    <i class="fa-solid fa-rotate-right"></i>
+                </button>
+                <button class="focus-fs-play-btn" id="fsPlayBtn">
+                    <i class="fa-solid fa-pause"></i>
+                </button>
+                <button class="focus-fs-ctrl-btn" id="fsSkipBtn" title="Bỏ qua">
+                    <i class="fa-solid fa-forward"></i>
+                </button>
+            </div>
+
+            <!-- Session Progress Dots -->
+            <div class="focus-fs-dots" id="fsDots">
+                <!-- JS render -->
+            </div>
+        </div>
+
+        <!-- LEFT: Music Panel -->
+        <div class="fs-side-panel fs-music-panel" id="fsMusicPanel">
+            <button class="fs-panel-toggle fs-panel-toggle-left" id="fsMusicToggle">
+                <i class="fa-solid fa-headphones"></i>
+            </button>
+            <div class="fs-panel-content" id="fsMusicContent">
+                <h4><i class="fa-solid fa-music"></i> Nhạc</h4>
+                <div class="fs-playlist" id="fsPlaylist">
+                    <!-- JS render -->
+                </div>
+            </div>
+        </div>
+
+        <!-- RIGHT: Ambient Panel -->
+        <div class="fs-side-panel fs-ambient-panel" id="fsAmbientPanel">
+            <button class="fs-panel-toggle fs-panel-toggle-right" id="fsAmbientToggle">
+                <i class="fa-solid fa-sliders"></i>
+            </button>
+            <div class="fs-panel-content" id="fsAmbientContent">
+                <h4><i class="fa-solid fa-wand-magic-sparkles"></i> Ambient</h4>
+                <!-- Ambient Quick Toggles -->
+                <div class="fs-ambient-grid">
+                    <button class="fs-amb-btn" data-fs-sound="rain"><span>🌧️</span><small>Rain</small></button>
+                    <button class="fs-amb-btn" data-fs-sound="thunder"><span>⛈️</span><small>Thunder</small></button>
+                    <button class="fs-amb-btn" data-fs-sound="fire"><span>🔥</span><small>Fire</small></button>
+                    <button class="fs-amb-btn" data-fs-sound="ocean"><span>🌊</span><small>Ocean</small></button>
+                    <button class="fs-amb-btn" data-fs-sound="birds"><span>🐦</span><small>Birds</small></button>
+                    <button class="fs-amb-btn" data-fs-sound="wind"><span>🌬️</span><small>Wind</small></button>
+                    <button class="fs-amb-btn" data-fs-sound="cafe"><span>☕</span><small>Café</small></button>
+                    <button class="fs-amb-btn" data-fs-sound="crickets"><span>🦗</span><small>Crickets</small></button>
+                </div>
+                <!-- Presets -->
+                <div class="fs-amb-presets">
+                    <button class="fs-amb-preset" data-fs-preset="rainforest">🌿 Forest</button>
+                    <button class="fs-amb-preset" data-fs-preset="coffeeshop">☕ Café</button>
+                    <button class="fs-amb-preset" data-fs-preset="beach">🏖️ Beach</button>
+                    <button class="fs-amb-preset" data-fs-preset="storm">⛈️ Storm</button>
+                    <button class="fs-amb-preset fs-amb-off" data-fs-preset="off">
+                        <i class="fa-solid fa-power-off"></i> Off
+                    </button>
+                </div>
+                <!-- Master Vol -->
+                <div class="fs-amb-master">
+                    <i class="fa-solid fa-volume-high"></i>
+                    <input type="range" class="fs-amb-slider" id="fsAmbientVol" min="0" max="100" value="70" />
+                    <span id="fsAmbientVolPct">70%</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Bottom: Now Playing + Quote -->
+        <div class="focus-fs-bottom">
+            <div class="focus-fs-now-playing" id="fsNowPlaying" style="display:none;">
+                <i class="fa-solid fa-compact-disc fa-spin"></i>
+                <span id="fsNowPlayingText">Đang phát nhạc...</span>
+            </div>
+            <div class="focus-fs-quote" id="fsQuote">
+                "The secret of getting ahead is getting started." — Mark Twain
             </div>
         </div>
     </div>
