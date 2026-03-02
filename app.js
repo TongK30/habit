@@ -11,6 +11,7 @@ let displayName = localStorage.getItem('habitflow_name') || 'Người dùng';
 const state = {
     habits: [],
     completions: [],
+    journal: [], // Daily journal entries
     stats: null,
     viewMode: 'monthly', // 'monthly' | 'weekly'
     currentDate: new Date(),
@@ -38,12 +39,14 @@ const CACHE_KEYS = {
     habits: 'habitflow_habits',
     completions: 'habitflow_completions',
     stats: 'habitflow_stats',
+    journal: 'habitflow_journal',
 };
 
 function saveCache() {
     try {
         localStorage.setItem(CACHE_KEYS.habits, JSON.stringify(state.habits));
         localStorage.setItem(CACHE_KEYS.completions, JSON.stringify(state.completions));
+        localStorage.setItem(CACHE_KEYS.journal, JSON.stringify(state.journal));
         if (state.stats) localStorage.setItem(CACHE_KEYS.stats, JSON.stringify(state.stats));
     } catch (e) { /* quota exceeded – ignore */ }
 }
@@ -53,9 +56,11 @@ function loadCache() {
         const h = localStorage.getItem(CACHE_KEYS.habits);
         const c = localStorage.getItem(CACHE_KEYS.completions);
         const s = localStorage.getItem(CACHE_KEYS.stats);
+        const j = localStorage.getItem(CACHE_KEYS.journal);
         if (h) state.habits = JSON.parse(h);
         if (c) state.completions = JSON.parse(c);
         if (s) state.stats = JSON.parse(s);
+        if (j) state.journal = JSON.parse(j);
         const b = localStorage.getItem('habitflow_badges');
         if (b) state.unlockedBadges = JSON.parse(b);
         return !!(h || c); // true nếu có cache
@@ -66,9 +71,76 @@ function loadCache() {
 // 📤 API SYNC QUEUE
 // Đảm bảo mọi tick đều được gửi lên Sheets theo thứ tự.
 // Nếu đang gửi thì xếp hàng, không mất tick nào.
+// ⚡ Queue được lưu vào localStorage để không mất khi refresh.
 // ============================================================
-const syncQueue = [];
+const syncQueue = (() => {
+    try {
+        const saved = localStorage.getItem('habitflow_sync_queue');
+        return saved ? JSON.parse(saved) : [];
+    } catch { return []; }
+})();
 let syncRunning = false;
+
+function saveSyncQueue() {
+    try {
+        localStorage.setItem('habitflow_sync_queue', JSON.stringify(syncQueue));
+    } catch { /* quota exceeded */ }
+}
+
+// 📝 Journal Sync Queue - retry failed journal saves
+let journalSyncQueue = (() => {
+    try {
+        const saved = localStorage.getItem('habitflow_journal_sync_queue');
+        return saved ? JSON.parse(saved) : [];
+    } catch { return []; }
+})();
+
+function saveJournalSyncQueue() {
+    try {
+        localStorage.setItem('habitflow_journal_sync_queue', JSON.stringify(journalSyncQueue));
+    } catch { /* quota exceeded */ }
+}
+
+function enqueueJournalSync(date, mood, content) {
+    // Replace existing entry for same date in queue
+    const idx = journalSyncQueue.findIndex(q => q.date === date);
+    if (idx >= 0) {
+        journalSyncQueue[idx] = { date, mood, content };
+    } else {
+        journalSyncQueue.push({ date, mood, content });
+    }
+    saveJournalSyncQueue();
+}
+
+async function processJournalSyncQueue() {
+    if (!API_URL || journalSyncQueue.length === 0) return;
+    console.log(`📝 Retrying ${journalSyncQueue.length} pending journal entries...`);
+
+    const toRetry = [...journalSyncQueue];
+    for (const item of toRetry) {
+        try {
+            await apiPost({
+                action: 'saveJournal',
+                date: item.date,
+                mood: item.mood,
+                content: item.content
+            });
+            // Remove from queue after success
+            const qIdx = journalSyncQueue.findIndex(q => q.date === item.date);
+            if (qIdx >= 0) journalSyncQueue.splice(qIdx, 1);
+            saveJournalSyncQueue();
+
+            // Remove _local flag from state
+            const sIdx = state.journal.findIndex(j => j.date === item.date);
+            if (sIdx >= 0) delete state.journal[sIdx]._local;
+            saveCache();
+            console.log(`✅ Journal synced: ${item.date}`);
+        } catch (err) {
+            console.log(`⚠️ Journal sync failed for ${item.date}: ${err.message}`);
+            break; // Stop on first error, retry later
+        }
+    }
+}
 
 function enqueuSync(habitId, date) {
     // Nếu đã có trong queue chờ (chưa gửi) thì toggle lại (hủy)
@@ -78,6 +150,7 @@ function enqueuSync(habitId, date) {
     } else {
         syncQueue.push({ habitId, date });
     }
+    saveSyncQueue();
     processSyncQueue();
 }
 
@@ -85,17 +158,21 @@ async function processSyncQueue() {
     if (syncRunning || syncQueue.length === 0 || !API_URL) return;
     syncRunning = true;
     while (syncQueue.length > 0) {
-        const item = syncQueue.shift();
+        const item = syncQueue[0]; // peek, don't remove yet
         try {
             await apiPost({ action: 'toggleCompletion', habitId: item.habitId, date: item.date });
+            syncQueue.shift(); // remove only after success
+            saveSyncQueue();
         } catch (err) {
-            // Kết nối lỗi: giữ nguyên state cache (không revert UI)
+            // Kết nối lỗi: giữ item trong queue để retry sau
             showToast('⚠️ Mất kết nối – dữ liệu đã lưu offline, sẽ đồng bộ sau.', 'error');
+            saveSyncQueue();
+            break; // Stop processing, retry later
         }
     }
     syncRunning = false;
     // Refresh stats sau khi sync xong
-    refreshStatsBackground();
+    if (syncQueue.length === 0) refreshStatsBackground();
 }
 
 async function refreshStatsBackground() {
@@ -248,6 +325,77 @@ function initUI() {
     document.getElementById('userName').textContent = displayName;
     document.getElementById('displayNameInput').value = displayName;
     document.getElementById('apiUrlInput').value = API_URL;
+
+    // Journal modal events
+    document.getElementById('closeJournal').addEventListener('click', closeJournalModal);
+    document.getElementById('confirmJournal').addEventListener('click', saveJournalEntry);
+    document.getElementById('deleteJournal').addEventListener('click', deleteJournalEntry);
+
+    // Mood picker
+    document.querySelectorAll('.mood-opt').forEach(el => {
+        el.addEventListener('click', () => {
+            document.querySelectorAll('.mood-opt').forEach(e => e.classList.remove('selected'));
+            el.classList.add('selected');
+        });
+    });
+
+    // Close journal modal on overlay click
+    document.getElementById('journalModal').addEventListener('click', (e) => {
+        if (e.target.id === 'journalModal') closeJournalModal();
+    });
+
+    // === Dashboard Notes ===
+    // Quick mood picker
+    document.querySelectorAll('#quickMoodPicker .quick-mood').forEach(el => {
+        el.addEventListener('click', () => {
+            document.querySelectorAll('#quickMoodPicker .quick-mood').forEach(e => e.classList.remove('selected'));
+            el.classList.add('selected');
+        });
+    });
+
+    // Quick note save
+    const quickSaveBtn = document.getElementById('quickNoteSave');
+    if (quickSaveBtn) {
+        quickSaveBtn.addEventListener('click', saveQuickNote);
+    }
+
+    // Quick note date display
+    const quickDateEl = document.getElementById('quickNoteDate');
+    if (quickDateEl) {
+        const d = new Date();
+        const dayNames = ['Chủ nhật', 'Thứ 2', 'Thứ 3', 'Thứ 4', 'Thứ 5', 'Thứ 6', 'Thứ 7'];
+        quickDateEl.textContent = `${dayNames[d.getDay()]}, ${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`;
+    }
+
+    // Load existing quick note (today's note) into the input
+    const todayStr = formatDate(new Date());
+    const todayEntry = state.journal.find(j => j.date === todayStr);
+    if (todayEntry) {
+        const qInput = document.getElementById('quickNoteInput');
+        if (qInput) qInput.value = todayEntry.content || '';
+        if (todayEntry.mood) {
+            const moodEl = document.querySelector(`#quickMoodPicker .quick-mood[data-mood="${todayEntry.mood}"]`);
+            if (moodEl) moodEl.classList.add('selected');
+        }
+    }
+
+    // View all notes button
+    const viewAllBtn = document.getElementById('viewAllNotes');
+    if (viewAllBtn) {
+        viewAllBtn.addEventListener('click', () => {
+            openJournalModal(formatDate(new Date()));
+        });
+    }
+
+    // Enter to save (Ctrl+Enter)
+    const quickInput = document.getElementById('quickNoteInput');
+    if (quickInput) {
+        quickInput.addEventListener('keydown', (e) => {
+            if (e.ctrlKey && e.key === 'Enter') {
+                saveQuickNote();
+            }
+        });
+    }
 }
 
 function initSettings() {
@@ -330,6 +478,35 @@ async function loadData() {
 
             state.completions = mergeCompletions(apiCompletions, state.completions);
 
+            // ✅ MERGE JOURNAL entries từ API (smart merge với timestamp)
+            if (data.journal) {
+                const apiJournal = data.journal || [];
+                const apiJournalMap = new Map(apiJournal.map(j => [j.date, j]));
+
+                // Bước 1: Bắt đầu với dữ liệu API
+                const merged = [...apiJournal];
+
+                // Bước 2: Kiểm tra local entries
+                state.journal.forEach(localJ => {
+                    const apiEntry = apiJournalMap.get(localJ.date);
+
+                    if (!apiEntry) {
+                        // Entry chỉ có ở local (chưa sync) → giữ lại
+                        if (localJ._local) {
+                            merged.push(localJ);
+                        }
+                    } else if (localJ._local && localJ.updatedAt) {
+                        // Entry có ở cả 2: local có _local flag → local mới hơn, ưu tiên local
+                        const mIdx = merged.findIndex(m => m.date === localJ.date);
+                        if (mIdx >= 0) {
+                            merged[mIdx] = localJ; // Giữ bản local mới hơn
+                        }
+                    }
+                });
+
+                state.journal = merged;
+            }
+
             state.stats = data.stats || null;
             saveCache();
             renderAll();
@@ -349,32 +526,56 @@ async function loadData() {
     } finally {
         showLoading(false);
     }
+
+    // 3️⃣ Retry pending sync items từ lần trước (nếu có)
+    if (syncQueue.length > 0 && API_URL) {
+        console.log(`📤 Retrying ${syncQueue.length} pending sync items...`);
+        processSyncQueue();
+    }
+
+    // 4️⃣ Retry pending journal entries
+    if (journalSyncQueue.length > 0 && API_URL) {
+        processJournalSyncQueue();
+    }
 }
 
 /**
  * Merge completions từ API với completions đang có trong cache.
  *
- * Quy tắc:
+ * Quy tắc MỚI (sửa bug mất dữ liệu):
  *  - Lấy TẤT CẢ từ API (dữ liệu đã confirmed trên Sheets).
- *  - CHỈ giữ lại item cache nếu nó đang PENDING trong syncQueue
- *    → đây là những tick vừa click chưa kịp sync lên Sheets.
- *  - KHÔNG giữ item cache cũ đã bị xóa trên server.
+ *  - Giữ lại item cache nếu nó CHƯA CÓ trên API:
+ *    → Có thể là tick offline/chưa kịp sync → PHẢI giữ lại.
+ *  - CHỈ loại bỏ local item nếu:
+ *    1) syncQueue hoàn toàn rỗng (mọi thứ đã sync xong)
+ *    2) VÀ item đó không có trên API (= đã bị xóa trên server)
  *
- * Kết quả: Khi xóa dữ liệu trên server → level reset đúng.
- *          Khi tick offline → giữ lại cho đến khi sync xong.
+ * Kết quả: Dữ liệu KHÔNG BAO GIỜ mất khi refresh trang.
  */
 function mergeCompletions(fromAPI, fromCache) {
     const apiKeys = new Set(fromAPI.map(c => `${c.habitId}_${c.date}`));
 
-    // Chỉ giữ local items đang chờ sync (pending in queue)
-    const pendingKeys = new Set(syncQueue.map(q => `${q.habitId}_${q.date}`));
-    const pendingLocal = fromCache.filter(c => {
+    // Nếu syncQueue còn pending → giữ TẤT CẢ local items chưa có trên API
+    // Nếu syncQueue rỗng → server là source of truth, chỉ lấy từ API
+    const hasPending = syncQueue.length > 0;
+
+    const localOnly = fromCache.filter(c => {
         const key = `${c.habitId}_${c.date}`;
-        // Giữ nếu: chưa có trên API VÀ đang pending sync
-        return !apiKeys.has(key) && pendingKeys.has(key);
+        if (apiKeys.has(key)) return false; // Đã có trên API → dùng bản API
+
+        if (hasPending) return true; // Còn pending → giữ tất cả local
+
+        // Không có pending → kiểm tra xem item này có ĐÚNG là mới tick không
+        // Nếu nó có completedAt gần đây (trong 5 phút) → giữ lại (API chưa kịp cập nhật)
+        if (c.completedAt) {
+            const tickedAt = new Date(c.completedAt).getTime();
+            const fiveMinAgo = Date.now() - 5 * 60 * 1000;
+            if (tickedAt > fiveMinAgo) return true;
+        }
+        return false;
     });
 
-    return [...fromAPI, ...pendingLocal];
+    return [...fromAPI, ...localOnly];
 }
 
 async function loadCompletionsForMonth(year, month) {
@@ -401,6 +602,26 @@ function renderAll() {
     renderStats();
     updateXP();
     renderDailySummaries(); // Mới: Render tóm tắt 7 ngày
+    renderDashboardNotes(); // Render ghi chú trên Dashboard
+}
+
+/**
+ * 🧠 SMART FILTER: Lấy danh sách habits active CHO MỘT NGÀY CỤ THỂ
+ * Chỉ trả về habits đã được tạo trước hoặc đúng ngày đó.
+ * Habits tạo SAU ngày đó sẽ KHÔNG được tính.
+ */
+function getActiveHabitsForDate(dateStr) {
+    return state.habits.filter(h => {
+        if (h.active === false) return false;
+        // Nếu habit có createdAt, chỉ tính từ ngày tạo trở đi
+        if (h.createdAt) {
+            const created = h.createdAt.includes('T')
+                ? h.createdAt.split('T')[0]
+                : h.createdAt.substring(0, 10);
+            if (dateStr < created) return false; // Ngày này trước khi habit được tạo
+        }
+        return true;
+    });
 }
 
 /**
@@ -415,25 +636,27 @@ function calculateLocalStats() {
         return;
     }
 
-    const activeHabits = habits.filter(h => h.active !== false);
-    const activeCount = activeHabits.length || 1; // tránh chia cho 0
     const today = new Date();
     const last30Days = [];
     let totalPoints = 0;
 
-    // 1. Tính toán 30 ngày gần nhất
+    // 1. Tính toán 30 ngày gần nhất (dùng smart filter theo ngày)
     for (let i = 29; i >= 0; i--) {
         const d = new Date(today);
         d.setDate(today.getDate() - i);
         const dateStr = formatDate(d);
 
-        const doneCount = completions.filter(c => {
-            const h = habits.find(hab => hab.id === c.habitId);
-            return c.date === dateStr && (!h || h.active !== false);
-        }).length;
-        const pts = Math.round((doneCount / activeCount) * 100);
+        // 🧠 Smart: Chỉ tính habits đã tồn tại vào ngày đó
+        const habitsForDay = getActiveHabitsForDate(dateStr);
+        const activeCount = habitsForDay.length || 1; // tránh chia cho 0
 
-        last30Days.push({ date: dateStr, completed: doneCount, points: pts });
+        const doneCount = completions.filter(c => {
+            if (c.date !== dateStr) return false;
+            return habitsForDay.some(h => h.id === c.habitId);
+        }).length;
+        const pts = habitsForDay.length > 0 ? Math.round((doneCount / activeCount) * 100) : 0;
+
+        last30Days.push({ date: dateStr, completed: doneCount, total: habitsForDay.length, points: pts });
         totalPoints += pts;
     }
 
@@ -566,11 +789,14 @@ function renderMonthlyCalendar() {
 function buildCalCell(dateStr, dayNum, isOther, today) {
     const dayCompletions = state.completions.filter(c => c.date === dateStr);
     const completedIds = dayCompletions.map(c => c.habitId);
-    const activeHabits = state.habits.filter(h => h.active !== false || completedIds.includes(h.id));
-    const totalActive = state.habits.filter(h => h.active !== false).length;
+    // 🧠 Smart: Chỉ hiện habits đã tồn tại vào ngày đó
+    const habitsForDay = getActiveHabitsForDate(dateStr);
+    const activeHabits = habitsForDay.filter(h => true).concat(
+        state.habits.filter(h => h.active === false && completedIds.includes(h.id))
+    );
+    const totalActive = habitsForDay.length;
     const doneActive = dayCompletions.filter(c => {
-        const h = state.habits.find(hab => hab.id === c.habitId);
-        return h && h.active !== false;
+        return habitsForDay.some(h => h.id === c.habitId);
     }).length;
     const pct = totalActive > 0 ? Math.round((doneActive / totalActive) * 100) : 0;
 
@@ -598,6 +824,14 @@ function buildCalCell(dateStr, dayNum, isOther, today) {
         habitsHtml += `<div style="font-size:10px;color:var(--text-dim);padding-left:4px">+${activeHabits.length - 4} khác</div>`;
     }
 
+    // Journal indicator
+    const journalEntry = state.journal.find(j => j.date === dateStr);
+    const journalBtn = `<button class="cal-journal-btn ${journalEntry ? 'has-entry' : ''}" 
+        onclick="event.stopPropagation(); openJournalModal('${dateStr}')" title="Ghi chú ngày">
+        ${journalEntry ? `<span>${journalEntry.mood || '📝'}</span>` : '<i class="fa-solid fa-pen-to-square"></i>'}
+        <span>${journalEntry ? (journalEntry.content || '').substring(0, 15) + (journalEntry.content && journalEntry.content.length > 15 ? '...' : '') : 'Ghi chú'}</span>
+    </button>`;
+
     return `<div class="${cellClass}">
     <div class="cal-date">
       <span>${dayNum}</span>
@@ -605,6 +839,7 @@ function buildCalCell(dateStr, dayNum, isOther, today) {
     </div>
     <div class="cal-habits-mini">${habitsHtml}</div>
     ${totalActive > 0 ? `<div class="cal-progress-bar"><div class="cal-progress-fill" style="width:${pct}%"></div></div>` : ''}
+    ${journalBtn}
   </div>`;
 }
 
@@ -693,10 +928,10 @@ function renderTodayHabits() {
         return;
     }
 
-    const activeHabits = state.habits.filter(h => h.active !== false);
+    // 🧠 Smart: Chỉ hiện habits đã tồn tại vào hôm nay
+    const activeHabits = getActiveHabitsForDate(today);
     const completedActiveCount = todayComp.filter(id => {
-        const h = state.habits.find(hab => hab.id === id);
-        return h && h.active !== false;
+        return activeHabits.some(h => h.id === id);
     }).length;
 
     const totalCount = activeHabits.length;
@@ -746,7 +981,7 @@ function renderDailySummaries() {
     const monday = new Date(now);
     monday.setDate(now.getDate() - diffToMon);
 
-    // Tạo 7 ngày T2 → CN
+    // Tạo 7 ngày T2 → CN theo thứ tự
     const weekDays = [];
     for (let i = 0; i < 7; i++) {
         const d = new Date(monday);
@@ -754,153 +989,131 @@ function renderDailySummaries() {
         weekDays.push(d);
     }
 
-    // Sắp xếp: TODAY trước, rồi các ngày còn lại theo thứ tự gốc T2→CN
-    const todayIndex = weekDays.findIndex(d => formatDate(d) === todayStr);
-    const sorted = [];
-    sorted.push(weekDays[todayIndex]); // Hôm nay đầu tiên
-    // Sau đó các ngày còn lại (giữ nguyên thứ tự T2→CN, bỏ qua hôm nay)
-    for (let i = 0; i < weekDays.length; i++) {
-        if (i !== todayIndex) sorted.push(weekDays[i]);
-    }
-
-    const activeHabits = state.habits.filter(h => h.active !== false);
     const dayLabels = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
 
-    container.innerHTML = sorted.map((date, idx) => {
-        const dateStr = formatDate(date);
-        const isToday = dateStr === todayStr;
-        const isFuture = date > now && !isToday;
-        const isPast = date < new Date(now.getFullYear(), now.getMonth(), now.getDate());
-
-        const dayName = isToday ? 'TODAY' : dayLabels[date.getDay()];
-        const displayDate = `Thg ${date.getMonth() + 1}, ${date.getDate()}`;
-
+    // ── Render TODAY (glow ring lớn) ──
+    const todayData = (() => {
+        const dateStr = todayStr;
         const dayCompletions = state.completions.filter(c => c.date === dateStr);
-        const total = activeHabits.length;
-        const done = dayCompletions.length;
+        // 🧠 Smart: Chỉ tính habits đã tồn tại vào hôm nay
+        const todayHabits = getActiveHabitsForDate(dateStr);
+        const total = todayHabits.length;
+        const done = dayCompletions.filter(c => todayHabits.some(h => h.id === c.habitId)).length;
         const pct = total > 0 ? Math.round((done / total) * 100) : 0;
         const points = done * 10;
         const totalPoints = total * 10;
 
-        // Status icon
-        let statusIcon = '';
-        let statusClass = '';
-        if (isFuture) {
-            statusIcon = '<i class="fa-regular fa-clock"></i>';
-            statusClass = 'future';
-        } else if (pct === 100) {
-            statusIcon = '<i class="fa-solid fa-circle-check"></i>';
-            statusClass = 'success';
-        } else if (isToday && pct > 0) {
-            statusIcon = '<i class="fa-solid fa-rotate-right fa-spin"></i>';
-            statusClass = 'today';
-        } else if (isToday) {
-            statusIcon = '<i class="fa-solid fa-rotate-right"></i>';
-            statusClass = 'today';
-        } else if (isPast && pct > 0) {
-            // Quá khứ hoàn thành 1 phần → dấu tích xanh nửa
-            statusIcon = '<i class="fa-solid fa-circle-check"></i>';
-            statusClass = 'past-partial';
-        } else if (isPast) {
-            // Quá khứ 0% → dấu X mờ
-            statusIcon = '<i class="fa-solid fa-circle-xmark"></i>';
-            statusClass = 'past-empty';
-        }
+        const R = 52;
+        const circSize = 120;
+        const circCenter = circSize / 2;
+        const circ = 2 * Math.PI * R;
+        const circOffset = circ - (pct / 100) * circ;
 
-        // ── Màu sắc theo thời gian ──
-        // Quá khứ: xanh lá (#10b981) | Hôm nay: tím accent (#6366f1) | Tương lai: xanh cyan (#06b6d4)
-        let circleStroke, timeClass;
-        if (isFuture) {
-            circleStroke = pct > 0 ? '#06b6d4' : 'var(--border)';
-            timeClass = 'future';
-        } else if (isToday) {
-            circleStroke = pct === 100 ? 'var(--green)' : (pct > 0 ? 'var(--accent)' : 'var(--border)');
-            timeClass = 'current';
+        // 🌈 Dynamic color based on completion percentage
+        let glowColor, glowBgColor, textShadowColor;
+        if (pct === 0) {
+            glowColor = '#ef4444';      // Red - chưa bắt đầu
+            glowBgColor = 'rgba(239, 68, 68, 0.12)';
+            textShadowColor = 'rgba(239, 68, 68, 0.6)';
+        } else if (pct <= 33) {
+            glowColor = '#f97316';      // Orange - mới bắt đầu
+            glowBgColor = 'rgba(249, 115, 22, 0.12)';
+            textShadowColor = 'rgba(249, 115, 22, 0.6)';
+        } else if (pct <= 66) {
+            glowColor = '#eab308';      // Amber/Yellow - đang tiến bộ
+            glowBgColor = 'rgba(234, 179, 8, 0.12)';
+            textShadowColor = 'rgba(234, 179, 8, 0.6)';
+        } else if (pct < 100) {
+            glowColor = '#3b82f6';      // Blue - gần hoàn thành
+            glowBgColor = 'rgba(59, 130, 246, 0.12)';
+            textShadowColor = 'rgba(59, 130, 246, 0.6)';
         } else {
-            // Quá khứ
-            circleStroke = pct === 100 ? 'var(--green)' : (pct > 0 ? 'var(--amber)' : 'var(--border)');
-            timeClass = 'past';
+            glowColor = '#10b981';      // Green - hoàn thành 100%
+            glowBgColor = 'rgba(16, 185, 129, 0.15)';
+            textShadowColor = 'rgba(16, 185, 129, 0.7)';
         }
-
-        // ── TODAY: Biểu đồ tròn phát sáng (Glow Ring) ──
-        if (isToday) {
-            const R = 52;
-            const circSize = 120;
-            const circCenter = circSize / 2;
-            const circ = 2 * Math.PI * R;
-            const circOffset = circ - (pct / 100) * circ;
-            const glowColor = pct === 100 ? '#10b981' : '#22d3ee';
-
-            return `
-                <div class="daily-card today time-${timeClass}">
-                    <div class="daily-card-header">
-                        <div class="header-text">
-                            <div class="daily-day-name">${dayName}</div>
-                            <div class="daily-date">${displayDate}</div>
-                        </div>
-                        <div class="daily-status-icon ${statusClass}">${statusIcon}</div>
-                    </div>
-                    <div class="today-glow-wrapper">
-                        <div class="today-glow-ring">
-                            <svg width="100%" height="100%" viewBox="0 0 ${circSize} ${circSize}">
-                                <defs>
-                                    <filter id="glowFilter" x="-50%" y="-50%" width="200%" height="200%">
-                                        <feGaussianBlur stdDeviation="4" result="blur"/>
-                                        <feComposite in="SourceGraphic" in2="blur" operator="over"/>
-                                    </filter>
-                                </defs>
-                                <circle class="glow-bg" cx="${circCenter}" cy="${circCenter}" r="${R}"></circle>
-                                <circle class="glow-fill" cx="${circCenter}" cy="${circCenter}" r="${R}" 
-                                    filter="url(#glowFilter)"
-                                    style="stroke-dasharray: ${circ}; stroke-dashoffset: ${circOffset}; stroke: ${glowColor}"></circle>
-                            </svg>
-                            <div class="glow-center-text">
-                                <span class="glow-pct">${pct}%</span>
-                            </div>
-                        </div>
-                        <div class="today-glow-stats">
-                            <span class="glow-points">${points}/${totalPoints}</span>
-                            <span class="glow-label">POINTS</span>
-                        </div>
-                    </div>
-                </div>
-            `;
-        }
-
-
-        // ── OTHER DAYS: Biểu đồ tròn ──
-        const r = 20;
-        const size = 44;
-        const center = size / 2;
-        const circumference = 2 * Math.PI * r;
-        const offset = isFuture ? circumference : circumference - (pct / 100) * circumference;
 
         return `
-            <div class="daily-card ${isFuture ? 'future' : ''} time-${timeClass}">
-                <div class="daily-card-header">
-                    <div class="header-text">
-                        <div class="daily-day-name">${dayName}</div>
-                        <div class="daily-date">${displayDate}</div>
+            <div class="daily-today-hero">
+                <div class="today-glow-ring" style="--glow-color: ${glowColor}; --glow-bg: ${glowBgColor}">
+                    <svg width="100%" height="100%" viewBox="0 0 ${circSize} ${circSize}">
+                        <defs>
+                            <filter id="glowFilter" x="-50%" y="-50%" width="200%" height="200%">
+                                <feGaussianBlur stdDeviation="4" result="blur"/>
+                                <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+                            </filter>
+                        </defs>
+                        <circle class="glow-bg" cx="${circCenter}" cy="${circCenter}" r="${R}" style="stroke: ${glowBgColor}"></circle>
+                        <circle class="glow-fill" cx="${circCenter}" cy="${circCenter}" r="${R}" 
+                            filter="url(#glowFilter)"
+                            style="stroke-dasharray: ${circ}; stroke-dashoffset: ${circOffset}; stroke: ${glowColor}"></circle>
+                    </svg>
+                    <div class="glow-center-text">
+                        <span class="glow-pct" style="text-shadow: 0 0 20px ${textShadowColor}; color: ${pct === 100 ? glowColor : '#fff'}">${pct}%</span>
                     </div>
-                    <div class="daily-status-icon ${statusClass}">${statusIcon}</div>
                 </div>
-                <div class="daily-card-body">
-                    <div class="daily-progress-circle">
+                <div class="today-hero-info">
+                    <span class="today-hero-label" style="color: ${glowColor}">${pct === 100 ? '✅ COMPLETE' : 'TODAY'}</span>
+                    <span class="today-hero-points">${points}/${totalPoints} <small>pts</small></span>
+                </div>
+            </div>
+        `;
+    })();
+
+    // ── Render 6 ngày còn lại (chỉ vòng tròn nhỏ) ──
+    const otherDays = weekDays
+        .filter(d => formatDate(d) !== todayStr)
+        .map(date => {
+            const dateStr = formatDate(date);
+            const isFuture = date > now;
+            const isPast = date < new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+            const dayName = dayLabels[date.getDay()];
+            const dayNum = date.getDate();
+
+            const dayCompletions = state.completions.filter(c => c.date === dateStr);
+            // 🧠 Smart: Chỉ tính habits đã tồn tại vào ngày đó
+            const dayHabits = getActiveHabitsForDate(dateStr);
+            const total = dayHabits.length;
+            const done = dayCompletions.filter(c => dayHabits.some(h => h.id === c.habitId)).length;
+            const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+
+            // Màu sắc
+            let circleStroke, timeClass;
+            if (isFuture) {
+                circleStroke = pct > 0 ? '#06b6d4' : 'var(--border)';
+                timeClass = 'future';
+            } else {
+                circleStroke = pct === 100 ? 'var(--green)' : (pct > 0 ? 'var(--amber)' : 'var(--border)');
+                timeClass = 'past';
+            }
+
+            const r = 22;
+            const size = 52;
+            const center = size / 2;
+            const circumference = 2 * Math.PI * r;
+            const offset = isFuture ? circumference : circumference - (pct / 100) * circumference;
+
+            return `
+                <div class="daily-circle-item ${isFuture ? 'future' : ''} time-${timeClass}">
+                    <div class="daily-circle-ring">
                         <svg width="${size}" height="${size}">
                             <circle class="bg" cx="${center}" cy="${center}" r="${r}"></circle>
                             <circle class="fill" cx="${center}" cy="${center}" r="${r}" 
                                 style="stroke-dasharray: ${circumference}; stroke-dashoffset: ${offset}; stroke: ${circleStroke}"></circle>
                         </svg>
-                        <span class="pct">${isFuture ? '—' : pct + '%'}</span>
+                        <span class="daily-circle-pct">${isFuture ? '—' : pct + '%'}</span>
                     </div>
-                    <div class="daily-card-stats">
-                        <span class="daily-stats-label">Points</span>
-                        <span class="daily-stats-val">${isFuture ? '—' : points + '/' + totalPoints}</span>
-                    </div>
+                    <span class="daily-circle-day">${dayName}</span>
+                    <span class="daily-circle-date">${dayNum}</span>
                 </div>
-            </div>
-        `;
-    }).join('');
+            `;
+        }).join('');
+
+    container.innerHTML = `
+        <div class="daily-circles-row">${otherDays}</div>
+        ${todayData}
+    `;
 }
 
 function renderGoalCircle(done, total) {
@@ -1492,6 +1705,340 @@ async function confirmDeleteHabit(habitId) {
 }
 
 // ============================================================
+// 📝 DASHBOARD NOTES
+// ============================================================
+function renderDashboardNotes() {
+    const container = document.getElementById('dashboardNotesList');
+    if (!container) return;
+
+    const dayNames = ['Chủ nhật', 'Thứ 2', 'Thứ 3', 'Thứ 4', 'Thứ 5', 'Thứ 6', 'Thứ 7'];
+    const moodLabels = {
+        '😊': 'Vui vẻ', '😌': 'Bình yên', '😐': 'Bình thường',
+        '😔': 'Buồn', '😤': 'Khó chịu', '🤩': 'Hưng phấn',
+        '😴': 'Mệt mỏi', '🥰': 'Hạnh phúc'
+    };
+
+    // Sort by date descending, take recent 5
+    const recentNotes = [...state.journal]
+        .filter(j => j.content || j.mood) // Only show entries with content or mood
+        .sort((a, b) => b.date.localeCompare(a.date))
+        .slice(0, 5);
+
+    if (recentNotes.length === 0) {
+        container.innerHTML = `
+            <div class="notes-empty">
+                <i class="fa-regular fa-note-sticky"></i>
+                Chưa có ghi chú nào. Hãy viết ghi chú đầu tiên ở trên!
+            </div>
+        `;
+        return;
+    }
+
+    const todayStr = formatDate(new Date());
+    const yesterdayDate = new Date();
+    yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+    const yesterdayStr = formatDate(yesterdayDate);
+
+    container.innerHTML = recentNotes.map(note => {
+        const d = new Date(note.date + 'T00:00:00');
+        let dateLabel;
+        if (note.date === todayStr) {
+            dateLabel = 'Hôm nay';
+        } else if (note.date === yesterdayStr) {
+            dateLabel = 'Hôm qua';
+        } else {
+            dateLabel = `${dayNames[d.getDay()]}, ${d.getDate()}/${d.getMonth() + 1}`;
+        }
+
+        const moodIcon = note.mood || '📝';
+        const moodName = moodLabels[note.mood] || '';
+        const hasContent = note.content && note.content.trim();
+
+        return `
+            <div class="note-card" data-date="${note.date}" onclick="openJournalModal('${note.date}')">
+                <div class="note-mood-icon">${moodIcon}</div>
+                <div class="note-content">
+                    <div class="note-meta">
+                        <span class="note-date-label">${dateLabel}</span>
+                        ${moodName ? `<span class="note-mood-badge">${moodName}</span>` : ''}
+                    </div>
+                    <div class="note-text ${!hasContent ? 'empty-text' : ''}">
+                        ${hasContent ? note.content : 'Không có ghi chú'}
+                    </div>
+                </div>
+                <div class="note-actions">
+                    <button class="note-action-btn" title="Sửa" onclick="event.stopPropagation(); openJournalModal('${note.date}')">
+                        <i class="fa-solid fa-pen"></i>
+                    </button>
+                    <button class="note-action-btn danger" title="Xóa" onclick="event.stopPropagation(); deleteDashboardNote('${note.date}')">
+                        <i class="fa-solid fa-trash"></i>
+                    </button>
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    // Show "more" link if there are more than 5 entries
+    const totalNotes = state.journal.filter(j => j.content || j.mood).length;
+    if (totalNotes > 5) {
+        container.innerHTML += `
+            <div class="notes-more-link" onclick="openJournalModal(formatDate(new Date()))">
+                <i class="fa-solid fa-book-open"></i> Xem tất cả ${totalNotes} ghi chú
+            </div>
+        `;
+    }
+}
+
+async function saveQuickNote() {
+    const mood = document.querySelector('#quickMoodPicker .quick-mood.selected')?.dataset.mood || '';
+    const content = document.getElementById('quickNoteInput').value.trim();
+
+    if (!mood && !content) {
+        showToast('Hãy chọn tâm trạng hoặc viết ghi chú!', 'error');
+        return;
+    }
+
+    const todayStr = formatDate(new Date());
+    const entry = {
+        date: todayStr,
+        mood,
+        content,
+        updatedAt: new Date().toISOString(),
+        _local: true,
+    };
+
+    // Update local state
+    const existingIdx = state.journal.findIndex(j => j.date === todayStr);
+    if (existingIdx >= 0) {
+        state.journal[existingIdx] = entry;
+    } else {
+        state.journal.push(entry);
+    }
+
+    saveCache();
+    renderDashboardNotes();
+    renderCalendar();
+    showToast(`${mood || '📝'} Đã lưu ghi chú hôm nay!`, 'success');
+
+    // Animate save button
+    const btn = document.getElementById('quickNoteSave');
+    if (btn) {
+        btn.innerHTML = '<i class="fa-solid fa-check"></i>';
+        btn.style.background = 'linear-gradient(135deg, #10b981, #34d399)';
+        setTimeout(() => {
+            btn.innerHTML = '<i class="fa-solid fa-paper-plane"></i>';
+            btn.style.background = '';
+        }, 1500);
+    }
+
+    // Sync to API
+    if (API_URL) {
+        try {
+            await apiPost({
+                action: 'saveJournal',
+                date: todayStr,
+                mood,
+                content
+            });
+            const idx = state.journal.findIndex(j => j.date === entry.date);
+            if (idx >= 0) delete state.journal[idx]._local;
+            saveCache();
+        } catch {
+            // 🔄 Thêm vào queue để retry lần sau
+            enqueueJournalSync(todayStr, mood, content);
+            showToast('⚠️ Ghi chú lưu offline – sẽ đồng bộ sau.', 'error');
+        }
+    }
+}
+
+async function deleteDashboardNote(dateStr) {
+    const idx = state.journal.findIndex(j => j.date === dateStr);
+    if (idx >= 0) {
+        state.journal.splice(idx, 1);
+        saveCache();
+        renderDashboardNotes();
+        renderCalendar();
+        showToast('🗑️ Đã xóa ghi chú.', 'success');
+    }
+
+    // If it's today's note, clear the quick input
+    const todayStr = formatDate(new Date());
+    if (dateStr === todayStr) {
+        const qInput = document.getElementById('quickNoteInput');
+        if (qInput) qInput.value = '';
+        document.querySelectorAll('#quickMoodPicker .quick-mood').forEach(e => e.classList.remove('selected'));
+    }
+
+    // Sync to API
+    if (API_URL) {
+        try {
+            await apiPost({
+                action: 'saveJournal',
+                date: dateStr,
+                mood: '',
+                content: ''
+            });
+        } catch { /* silent */ }
+    }
+}
+
+// ============================================================
+// 📝 DAILY JOURNAL
+// ============================================================
+let currentJournalDate = null;
+
+function openJournalModal(dateStr) {
+    currentJournalDate = dateStr;
+    const modal = document.getElementById('journalModal');
+
+    // Format date for display
+    const d = new Date(dateStr + 'T00:00:00');
+    const dayNames = ['Chủ nhật', 'Thứ 2', 'Thứ 3', 'Thứ 4', 'Thứ 5', 'Thứ 6', 'Thứ 7'];
+    const monthNames = ['Tháng 1', 'Tháng 2', 'Tháng 3', 'Tháng 4', 'Tháng 5', 'Tháng 6',
+        'Tháng 7', 'Tháng 8', 'Tháng 9', 'Tháng 10', 'Tháng 11', 'Tháng 12'];
+    const dateDisplay = `<i class="fa-solid fa-calendar-day"></i> ${dayNames[d.getDay()]}, ${d.getDate()} ${monthNames[d.getMonth()]} ${d.getFullYear()}`;
+    document.getElementById('journalDateDisplay').innerHTML = dateDisplay;
+
+    // Load existing entry
+    const existing = state.journal.find(j => j.date === dateStr);
+
+    // Reset mood picker
+    document.querySelectorAll('.mood-opt').forEach(e => e.classList.remove('selected'));
+
+    if (existing) {
+        document.getElementById('journalContent').value = existing.content || '';
+        // Select the matching mood
+        if (existing.mood) {
+            const moodEl = document.querySelector(`.mood-opt[data-mood="${existing.mood}"]`);
+            if (moodEl) moodEl.classList.add('selected');
+        }
+        document.getElementById('deleteJournal').style.display = 'inline-flex';
+    } else {
+        document.getElementById('journalContent').value = '';
+        document.getElementById('deleteJournal').style.display = 'none';
+    }
+
+    // Show stats for this day
+    const dayCompletions = state.completions.filter(c => c.date === dateStr);
+    const totalActive = state.habits.filter(h => h.active !== false).length;
+    const doneCount = dayCompletions.filter(c => {
+        const h = state.habits.find(hab => hab.id === c.habitId);
+        return h && h.active !== false;
+    }).length;
+
+    const statsHtml = `
+        <span class="stat-item"><i class="fa-solid fa-check-circle"></i> ${doneCount}/${totalActive} thói quen</span>
+        <span class="stat-item"><i class="fa-solid fa-fire"></i> ${totalActive > 0 ? Math.round((doneCount / totalActive) * 100) : 0}% hoàn thành</span>
+    `;
+    document.getElementById('journalStats').innerHTML = statsHtml;
+
+    // Show modal
+    modal.classList.add('show');
+
+    // Focus textarea with slight delay
+    setTimeout(() => document.getElementById('journalContent').focus(), 200);
+}
+
+function closeJournalModal() {
+    document.getElementById('journalModal').classList.remove('show');
+    currentJournalDate = null;
+}
+
+async function saveJournalEntry() {
+    if (!currentJournalDate) return;
+
+    const mood = document.querySelector('.mood-opt.selected')?.dataset.mood || '';
+    const content = document.getElementById('journalContent').value.trim();
+
+    if (!mood && !content) {
+        showToast('Hãy chọn tâm trạng hoặc viết ghi chú!', 'error');
+        return;
+    }
+
+    const entry = {
+        date: currentJournalDate,
+        mood,
+        content,
+        updatedAt: new Date().toISOString(),
+        _local: true, // Mark as local until synced
+    };
+
+    // Update local state
+    const existingIdx = state.journal.findIndex(j => j.date === currentJournalDate);
+    if (existingIdx >= 0) {
+        state.journal[existingIdx] = entry;
+    } else {
+        state.journal.push(entry);
+    }
+
+    saveCache();
+    renderCalendar();
+    renderDashboardNotes();
+
+    // Sync quick note input if saving today's journal
+    const todayCheck = formatDate(new Date());
+    if (currentJournalDate === todayCheck) {
+        const qInput = document.getElementById('quickNoteInput');
+        if (qInput) qInput.value = content;
+        document.querySelectorAll('#quickMoodPicker .quick-mood').forEach(e => e.classList.remove('selected'));
+        if (mood) {
+            const mEl = document.querySelector(`#quickMoodPicker .quick-mood[data-mood="${mood}"]`);
+            if (mEl) mEl.classList.add('selected');
+        }
+    }
+
+    closeJournalModal();
+    showToast(`${mood || '📝'} Đã lưu ghi chú!`, 'success');
+
+    // Sync to API
+    if (API_URL) {
+        try {
+            await apiPost({
+                action: 'saveJournal',
+                date: entry.date,
+                mood,
+                content
+            });
+            // Remove _local flag after sync
+            const idx = state.journal.findIndex(j => j.date === entry.date);
+            if (idx >= 0) delete state.journal[idx]._local;
+            saveCache();
+        } catch {
+            // 🔄 Thêm vào queue để retry lần sau
+            enqueueJournalSync(entry.date, mood, content);
+            showToast('⚠️ Ghi chú lưu offline – sẽ đồng bộ sau.', 'error');
+        }
+    }
+}
+
+async function deleteJournalEntry() {
+    if (!currentJournalDate) return;
+
+    const idx = state.journal.findIndex(j => j.date === currentJournalDate);
+    if (idx >= 0) {
+        state.journal.splice(idx, 1);
+        saveCache();
+        renderCalendar();
+        renderDashboardNotes();
+    }
+
+    closeJournalModal();
+    showToast('🗑️ Đã xóa ghi chú.', 'success');
+
+    // Sync to API (save with empty content = effective delete)
+    if (API_URL) {
+        try {
+            await apiPost({
+                action: 'saveJournal',
+                date: currentJournalDate,
+                mood: '',
+                content: ''
+            });
+        } catch { /* silent */ }
+    }
+}
+
+// ============================================================
 // API HELPERS
 // ============================================================
 async function apiGet(params) {
@@ -1547,10 +2094,16 @@ function showPage(name) {
     document.querySelectorAll('.nav-item').forEach(n => {
         n.classList.toggle('active', n.dataset.page === name);
     });
-    const titles = { dashboard: 'Dashboard', habits: 'Thói quen', stats: 'Thống kê', settings: 'Cài đặt' };
+    const titles = { dashboard: 'Dashboard', habits: 'Thói quen', stats: 'Thống kê', focus: 'Thời gian tập trung', settings: 'Cài đặt' };
     document.querySelector('#pageTitle h1').textContent = titles[name] || name;
     closeSidebar();
     if (name === 'stats') { renderStats(); }
+
+    // Toggle floating focus menu
+    const ffm = document.getElementById('focusFloatMenu');
+    if (ffm) {
+        ffm.classList.toggle('visible', name === 'focus');
+    }
 }
 
 function setView(mode) {
@@ -1614,7 +2167,2456 @@ function formatDateFromParts(year, month, day) {
     return formatDate(d);
 }
 
+
 function formatDateVi(date) {
     const days = ['Chủ nhật', 'Thứ hai', 'Thứ ba', 'Thứ tư', 'Thứ năm', 'Thứ sáu', 'Thứ bảy'];
     return `${days[date.getDay()]}, ${date.getDate()}/${date.getMonth() + 1}/${date.getFullYear()}`;
 }
+
+// ============================================================
+// ⏱️ FOCUS TIMER MODULE
+// ============================================================
+const FocusTimer = (() => {
+    // ── CONFIG ──
+    const MODES = {
+        deepwork: { label: 'Deep Work Session', duration: 25 * 60, subtitle: 'Stay focused for 25 minutes', points: 50 },
+        shortbreak: { label: 'Short Break', duration: 5 * 60, subtitle: 'Take a short 5 minute break', points: 10 },
+        longbreak: { label: 'Long Break', duration: 15 * 60, subtitle: 'Relax for 15 minutes', points: 20 },
+        custom: { label: 'Custom Session', duration: 45 * 60, subtitle: 'Custom focus session', points: 40 },
+    };
+
+    const RARITY_CONFIG = {
+        common: { label: 'COMMON', color: '#10b981', weight: 50 },
+        uncommon: { label: 'UNCOMMON', color: '#3b82f6', weight: 25 },
+        rare: { label: 'RARE', color: '#06b6d4', weight: 15 },
+        legendary: { label: 'LEGENDARY', color: '#f59e0b', weight: 10 },
+    };
+
+    const WHEEL_COLORS = [
+        '#ef4444', '#f59e0b', '#10b981', '#3b82f6',
+        '#8b5cf6', '#06b6d4', '#ec4899', '#6366f1',
+    ];
+
+    const CIRCUMFERENCE = 2 * Math.PI * 126; // ~791.68
+
+    // ── STATE ──
+    let currentMode = 'deepwork';
+    let timeLeft = MODES.deepwork.duration;
+    let totalTime = MODES.deepwork.duration;
+    let timerInterval = null;
+    let isRunning = false;
+    let sessionsDone = 0;
+    const sessionsGoal = 4;
+    let spinCharges = 0;
+    let isSpinning = false;
+    let spinAngle = 0;
+
+    // ── DATA (localStorage) ──
+    let rewardPool = JSON.parse(localStorage.getItem('habitflow_rewards') || 'null') || [
+        { id: 'r1', name: '15p chơi game', icon: '🎮', rarity: 'common' },
+        { id: 'r2', name: 'Ăn vặt ngon', icon: '🍫', rarity: 'rare' },
+        { id: 'r3', name: 'Mua đồ mới', icon: '🛍️', rarity: 'legendary' },
+        { id: 'r4', name: '5p lướt MXH', icon: '📱', rarity: 'common' },
+        { id: 'r5', name: 'Cafe đặc biệt', icon: '☕', rarity: 'uncommon' },
+        { id: 'r6', name: '15p đi dạo', icon: '🚶', rarity: 'uncommon' },
+    ];
+
+    let focusHistory = JSON.parse(localStorage.getItem('habitflow_focus_history') || '[]');
+
+    function saveRewards() {
+        localStorage.setItem('habitflow_rewards', JSON.stringify(rewardPool));
+    }
+    function saveHistory() {
+        localStorage.setItem('habitflow_focus_history', JSON.stringify(focusHistory));
+    }
+
+    // ── INIT ──
+    function init() {
+        // Mode buttons
+        document.querySelectorAll('.focus-mode-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                if (isRunning) return;
+                setMode(btn.dataset.mode);
+            });
+        });
+
+        // Start/Pause
+        document.getElementById('focusBtnStart').addEventListener('click', toggleTimer);
+        document.getElementById('focusBtnReset').addEventListener('click', resetTimer);
+
+        // Reward Pool Modal
+        document.getElementById('openRewardPool').addEventListener('click', openRewardPoolModal);
+        document.getElementById('closeRewardPool').addEventListener('click', closeRewardPoolModal);
+        document.getElementById('cancelRewardPool').addEventListener('click', closeRewardPoolModal);
+        document.getElementById('saveRewardPool').addEventListener('click', () => {
+            saveRewards();
+            closeRewardPoolModal();
+            renderRewardPreview();
+            renderDropRates();
+            showToast('✅ Đã lưu phần thưởng!', 'success');
+        });
+        document.getElementById('addRewardBtn').addEventListener('click', addRewardToPool);
+
+        // Spin Wheel
+        document.getElementById('closeSpinWheel').addEventListener('click', closeSpinWheel);
+        document.getElementById('spinBtn').addEventListener('click', spinWheel);
+        document.getElementById('spinViewHistory').addEventListener('click', () => {
+            closeSpinWheel();
+            showPage('focus');
+        });
+
+        // Reward Won
+        document.getElementById('claimRewardBtn').addEventListener('click', claimReward);
+
+        // History
+        document.getElementById('clearFocusHistory').addEventListener('click', () => {
+            showConfirmModal({
+                title: 'Xóa lịch sử',
+                message: 'Bạn có chắc muốn xóa toàn bộ lịch sử tập trung?',
+                confirmText: 'Xóa',
+                isDanger: true,
+                onConfirm: () => {
+                    focusHistory = [];
+                    saveHistory();
+                    renderFocusHistory();
+                    showToast('🗑️ Đã xóa lịch sử!', 'success');
+                }
+            });
+        });
+
+        // Reward Pool Modal overlay close
+        document.getElementById('rewardPoolModal').addEventListener('click', (e) => {
+            if (e.target.id === 'rewardPoolModal') closeRewardPoolModal();
+        });
+
+        // Time inputs - prevent click propagation & handle changes
+        const timeInputMap = {
+            'timeDeepWork': 'deepwork',
+            'timeShortBreak': 'shortbreak',
+            'timeLongBreak': 'longbreak',
+            'timeCustom': 'custom',
+        };
+
+        // Load saved custom times from localStorage
+        const savedTimes = JSON.parse(localStorage.getItem('habitflow_focus_times') || 'null');
+        if (savedTimes) {
+            Object.entries(savedTimes).forEach(([mode, mins]) => {
+                if (MODES[mode]) {
+                    MODES[mode].duration = mins * 60;
+                }
+            });
+        }
+
+        Object.entries(timeInputMap).forEach(([inputId, mode]) => {
+            const input = document.getElementById(inputId);
+            if (!input) return;
+
+            // Set input value from saved config
+            input.value = Math.round(MODES[mode].duration / 60);
+
+            // Prevent click from selecting the mode button
+            input.addEventListener('click', (e) => e.stopPropagation());
+            input.addEventListener('mousedown', (e) => e.stopPropagation());
+            input.addEventListener('focus', (e) => e.stopPropagation());
+
+            // On change - update the mode duration
+            input.addEventListener('change', () => {
+                let mins = parseInt(input.value) || 1;
+                mins = Math.max(1, Math.min(180, mins));
+                input.value = mins;
+
+                MODES[mode].duration = mins * 60;
+                MODES[mode].subtitle = `Stay focused for ${mins} minutes`;
+                MODES[mode].points = Math.round(mins * 2);
+
+                // Save to localStorage
+                const times = {};
+                Object.keys(MODES).forEach(m => {
+                    times[m] = Math.round(MODES[m].duration / 60);
+                });
+                localStorage.setItem('habitflow_focus_times', JSON.stringify(times));
+
+                // If this is the active mode, update timer
+                if (currentMode === mode && !isRunning) {
+                    timeLeft = MODES[mode].duration;
+                    totalTime = MODES[mode].duration;
+                    document.getElementById('focusSessionSubtitle').textContent = MODES[mode].subtitle;
+                    updateTimerDisplay();
+                    updateTimerRing(1);
+                }
+            });
+        });
+
+        // Update initial timer with loaded custom time
+        timeLeft = MODES[currentMode].duration;
+        totalTime = MODES[currentMode].duration;
+
+        // Initial render
+        renderAll();
+    }
+
+    function renderAll() {
+        updateTimerDisplay();
+        renderSessionDots();
+        renderRewardPreview();
+        renderDropRates();
+        renderFocusHistory();
+        updateSessionTarget();
+    }
+
+    // ── MODE ──
+    function setMode(mode) {
+        currentMode = mode;
+        const config = MODES[mode];
+
+        // Read the latest value from the corresponding time input
+        const inputMap = { deepwork: 'timeDeepWork', shortbreak: 'timeShortBreak', longbreak: 'timeLongBreak', custom: 'timeCustom' };
+        const input = document.getElementById(inputMap[mode]);
+        if (input) {
+            const mins = parseInt(input.value) || Math.round(config.duration / 60);
+            config.duration = mins * 60;
+            config.subtitle = `Stay focused for ${mins} minutes`;
+            config.points = Math.round(mins * 2);
+        }
+
+        timeLeft = config.duration;
+        totalTime = config.duration;
+
+        document.querySelectorAll('.focus-mode-btn').forEach(b => {
+            b.classList.toggle('active', b.dataset.mode === mode);
+        });
+
+        document.getElementById('focusSessionTitle').textContent = config.label;
+        document.getElementById('focusSessionSubtitle').textContent = config.subtitle;
+
+        updateTimerDisplay();
+        updateTimerRing(1);
+    }
+
+    // ── TIMER ──
+    function toggleTimer() {
+        if (isRunning) {
+            pauseTimer();
+        } else {
+            startTimer();
+        }
+    }
+
+    function startTimer() {
+        if (timeLeft <= 0) return;
+        isRunning = true;
+
+        const btn = document.getElementById('focusBtnStart');
+        btn.innerHTML = '<i class="fa-solid fa-pause"></i> PAUSE';
+        btn.classList.add('running');
+
+        document.querySelector('.focus-timer-ring-wrap').classList.add('running');
+
+        // Enter fullscreen for focus sessions (not breaks)
+        const isBreak = currentMode === 'shortbreak' || currentMode === 'longbreak';
+        if (!isBreak && typeof FocusFullscreen !== 'undefined') {
+            FocusFullscreen.enter(currentMode, MODES[currentMode], timeLeft, totalTime);
+        }
+
+        timerInterval = setInterval(() => {
+            timeLeft--;
+            updateTimerDisplay();
+            updateTimerRing(timeLeft / totalTime);
+
+            // Sync fullscreen
+            if (typeof FocusFullscreen !== 'undefined') {
+                FocusFullscreen.syncTimer(timeLeft, totalTime, isRunning);
+            }
+
+            if (timeLeft <= 0) {
+                clearInterval(timerInterval);
+                timerInterval = null;
+                isRunning = false;
+                if (typeof FocusFullscreen !== 'undefined') FocusFullscreen.exit();
+                onTimerComplete();
+            }
+        }, 1000);
+    }
+
+    function pauseTimer() {
+        clearInterval(timerInterval);
+        timerInterval = null;
+        isRunning = false;
+
+        const btn = document.getElementById('focusBtnStart');
+        btn.innerHTML = '<i class="fa-solid fa-play"></i> RESUME';
+        btn.classList.remove('running');
+
+        document.querySelector('.focus-timer-ring-wrap').classList.remove('running');
+    }
+
+    function resetTimer() {
+        clearInterval(timerInterval);
+        timerInterval = null;
+        isRunning = false;
+
+        timeLeft = MODES[currentMode].duration;
+        totalTime = MODES[currentMode].duration;
+
+        const btn = document.getElementById('focusBtnStart');
+        btn.innerHTML = '<i class="fa-solid fa-play"></i> START';
+        btn.classList.remove('running');
+
+        document.querySelector('.focus-timer-ring-wrap').classList.remove('running');
+
+        updateTimerDisplay();
+        updateTimerRing(1);
+    }
+
+    function updateTimerDisplay() {
+        const min = Math.floor(timeLeft / 60);
+        const sec = timeLeft % 60;
+        document.getElementById('focusTimeDisplay').textContent =
+            `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+    }
+
+    function updateTimerRing(fraction) {
+        const offset = CIRCUMFERENCE * (1 - fraction);
+        const progress = document.getElementById('timerProgress');
+        const glow = document.getElementById('timerGlow');
+        if (progress) progress.style.strokeDashoffset = offset;
+        if (glow) glow.style.strokeDashoffset = offset;
+    }
+
+    function onTimerComplete() {
+        const config = MODES[currentMode];
+        const isBreak = currentMode === 'shortbreak' || currentMode === 'longbreak';
+
+        // Focus sessions (deepwork + custom) trigger reward
+        if (!isBreak) {
+            sessionsDone++;
+            spinCharges++;
+            updateSessionTarget();
+            renderSessionDots();
+
+            // Add focus history entry (reward added after spinning)
+            const entry = {
+                id: 'fh_' + Date.now(),
+                mode: currentMode,
+                duration: totalTime,
+                points: config.points,
+                date: new Date().toISOString(),
+                reward: null,
+            };
+            focusHistory.unshift(entry);
+            saveHistory();
+            renderFocusHistory();
+
+            // Award XP
+            // Base XP = mode points, Bonus = 5 XP per 10 mins above 25 min
+            const baseXP = config.points;
+            const bonusXP = Math.max(0, Math.floor((totalTime - 25 * 60) / (10 * 60)) * 5);
+            const totalXP = baseXP + bonusXP;
+            if (typeof FocusXP !== 'undefined') {
+                FocusXP.addXP(totalXP, config.points, totalTime);
+                // Sync to Google Sheets in background
+                FocusXP.syncSession(entry);
+            }
+
+            // Show spin wheel
+            openSpinWheel(config);
+
+            // Update daily tracker
+            if (typeof DailyFocusTracker !== 'undefined') DailyFocusTracker.render();
+
+            showToast('🎉 Phiên tập trung hoàn thành! Quay thưởng ngay!', 'success');
+        } else {
+            showToast('✅ Nghỉ ngơi xong! Bắt đầu phiên tập trung mới nhé!', 'success');
+            // Auto switch to deep work
+            setMode('deepwork');
+        }
+
+        // Reset button
+        const btn = document.getElementById('focusBtnStart');
+        btn.innerHTML = '<i class="fa-solid fa-play"></i> START';
+        btn.classList.remove('running');
+        document.querySelector('.focus-timer-ring-wrap').classList.remove('running');
+
+        // Reset timer for the mode
+        timeLeft = config.duration;
+        totalTime = config.duration;
+        updateTimerDisplay();
+        updateTimerRing(1);
+    }
+
+    // ── SESSION DOTS ──
+    function renderSessionDots() {
+        const container = document.getElementById('focusSessionDots');
+        if (!container) return;
+
+        let html = '';
+        for (let i = 0; i < sessionsGoal; i++) {
+            const isDone = i < sessionsDone;
+            const isCurrent = i === sessionsDone;
+            const cls = isDone ? 'completed' : isCurrent ? 'current' : 'locked';
+            const icon = isDone ? '<i class="fa-solid fa-check"></i>' : isCurrent ? '<i class="fa-solid fa-crosshairs"></i>' : '<i class="fa-solid fa-lock"></i>';
+
+            if (i > 0) {
+                html += `<div class="focus-dot-line ${isDone ? 'completed' : ''}"></div>`;
+            }
+
+            html += `
+                <div class="focus-dot-group">
+                    <div class="focus-dot ${cls}">${icon}</div>
+                    <span class="focus-dot-label">Session ${i + 1}</span>
+                </div>
+            `;
+        }
+        container.innerHTML = html;
+    }
+
+    function updateSessionTarget() {
+        const doneEl = document.getElementById('focusSessionsDone');
+        if (doneEl) doneEl.textContent = sessionsDone;
+    }
+
+    // ── REWARD PREVIEW ──
+    function renderRewardPreview() {
+        const container = document.getElementById('rewardPreviewList');
+        if (!container) return;
+
+        if (rewardPool.length === 0) {
+            container.innerHTML = '<div class="empty-state-sm">Chưa có phần thưởng. Nhấn Edit Pool để thêm!</div>';
+            return;
+        }
+
+        // Show top 4 rewards
+        const showItems = rewardPool.slice(0, 4);
+        container.innerHTML = showItems.map(r => {
+            const cfg = RARITY_CONFIG[r.rarity];
+            const weight = cfg.weight;
+            return `
+                <div class="reward-item">
+                    <div class="reward-item-icon ${r.rarity}">${r.icon}</div>
+                    <div class="reward-item-info">
+                        <div class="reward-item-name">${r.name}</div>
+                        <span class="reward-item-rarity ${r.rarity}">${cfg.label}</span>
+                    </div>
+                    <span class="reward-item-pct">${weight}%</span>
+                </div>
+            `;
+        }).join('');
+    }
+
+    // ── DROP RATES ──
+    function renderDropRates() {
+        const container = document.getElementById('dropRateBars');
+        if (!container) return;
+
+        const rarities = ['common', 'uncommon', 'rare', 'legendary'];
+        container.innerHTML = rarities.map(r => {
+            const cfg = RARITY_CONFIG[r];
+            const height = cfg.weight; // Use weight as bar height percentage
+            return `
+                <div class="drop-rate-item">
+                    <div class="drop-rate-bar ${r}" style="height: ${height}px"></div>
+                    <span class="drop-rate-label">${cfg.label}</span>
+                </div>
+            `;
+        }).join('');
+
+        // Luck bonus
+        const luckBonus = sessionsDone >= 4 ? 1.2 : sessionsDone * 0.3;
+        const luckEl = document.getElementById('luckBonusValue');
+        if (luckEl) luckEl.textContent = `+${luckBonus.toFixed(1)}%`;
+    }
+
+    // ── REWARD POOL MODAL ──
+    function openRewardPoolModal() {
+        document.getElementById('rewardPoolModal').classList.add('show');
+        renderRewardPoolList();
+    }
+
+    function closeRewardPoolModal() {
+        document.getElementById('rewardPoolModal').classList.remove('show');
+    }
+
+    function renderRewardPoolList() {
+        const container = document.getElementById('rewardPoolList');
+        if (!container) return;
+
+        if (rewardPool.length === 0) {
+            container.innerHTML = '<div class="empty-state-sm">Chưa có phần thưởng nào</div>';
+            return;
+        }
+
+        container.innerHTML = rewardPool.map(r => {
+            const cfg = RARITY_CONFIG[r.rarity];
+            return `
+                <div class="reward-pool-item" data-id="${r.id}">
+                    <div class="reward-item-icon ${r.rarity}">${r.icon}</div>
+                    <div class="reward-item-info">
+                        <div class="reward-item-name">${r.name}</div>
+                        <span class="reward-item-rarity ${r.rarity}">${cfg.label}</span>
+                    </div>
+                    <button class="reward-delete-btn" onclick="FocusTimer.removeReward('${r.id}')">
+                        <i class="fa-solid fa-trash"></i>
+                    </button>
+                </div>
+            `;
+        }).join('');
+    }
+
+    function addRewardToPool() {
+        const name = document.getElementById('rewardNameInput').value.trim();
+        const icon = document.getElementById('rewardIconInput').value.trim() || '🎁';
+        const rarity = document.getElementById('rewardRarityInput').value;
+
+        if (!name) {
+            showToast('Vui lòng nhập tên phần thưởng!', 'error');
+            return;
+        }
+
+        rewardPool.push({
+            id: 'r_' + Date.now(),
+            name,
+            icon,
+            rarity,
+        });
+
+        saveRewards();
+        renderRewardPoolList();
+        renderRewardPreview();
+        renderDropRates();
+
+        // Clear inputs
+        document.getElementById('rewardNameInput').value = '';
+        document.getElementById('rewardIconInput').value = '';
+        document.getElementById('rewardRarityInput').value = 'common';
+
+        showToast('✅ Đã thêm phần thưởng!', 'success');
+    }
+
+    function removeReward(id) {
+        rewardPool = rewardPool.filter(r => r.id !== id);
+        saveRewards();
+        renderRewardPoolList();
+        renderRewardPreview();
+        renderDropRates();
+    }
+
+    // ── SPIN WHEEL ──
+    function openSpinWheel(config) {
+        const modal = document.getElementById('spinWheelModal');
+        modal.classList.add('show');
+
+        // Update stats
+        const mins = Math.floor(config.duration / 60);
+        const secs = config.duration % 60;
+        document.getElementById('spinTimeFocused').textContent = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+        document.getElementById('spinFocusPoints').textContent = `+${config.points}`;
+        document.getElementById('spinXPGained').textContent = `+${Math.round(config.points * 0.2)}% XP`;
+        document.getElementById('spinCharges').textContent = `${spinCharges} CHARGE${spinCharges > 1 ? 'S' : ''}`;
+
+        // Stars based on sessions done
+        const starsContainer = document.getElementById('spinStars');
+        const numStars = Math.min(3, Math.ceil(sessionsDone / 2));
+        starsContainer.innerHTML = '';
+        for (let i = 0; i < 3; i++) {
+            starsContainer.innerHTML += `<i class="fa-${i < numStars ? 'solid' : 'regular'} fa-star"></i>`;
+        }
+
+        // Possible rewards list
+        renderSpinPossibleRewards();
+
+        // Draw wheel
+        drawSpinWheel(0);
+
+        // Enable spin button
+        const btn = document.getElementById('spinBtn');
+        btn.disabled = false;
+    }
+
+    function closeSpinWheel() {
+        document.getElementById('spinWheelModal').classList.remove('show');
+    }
+
+    function renderSpinPossibleRewards() {
+        const container = document.getElementById('spinPossibleRewards');
+        if (!container) return;
+
+        if (rewardPool.length === 0) {
+            container.innerHTML = '<div class="empty-state-sm">Không có phần thưởng</div>';
+            return;
+        }
+
+        container.innerHTML = rewardPool.map(r => {
+            const cfg = RARITY_CONFIG[r.rarity];
+            return `
+                <div class="spin-reward-item">
+                    <div class="spin-reward-item-icon ${r.rarity}">${r.icon}</div>
+                    <div class="spin-reward-info">
+                        <div class="spin-reward-name">${r.name}</div>
+                        <div class="spin-reward-detail">${cfg.label} · ${cfg.weight}%</div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    function drawSpinWheel(rotation) {
+        const canvas = document.getElementById('spinWheelCanvas');
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        const size = canvas.width;
+        const center = size / 2;
+        const outerRadius = (size / 2) - 8;
+        const radius = outerRadius - 14;
+
+        ctx.clearRect(0, 0, size, size);
+
+        const items = rewardPool.length > 0 ? rewardPool : [{ name: 'Thêm phần thưởng!', icon: '❓', rarity: 'common' }];
+        const sliceAngle = (2 * Math.PI) / items.length;
+
+        // ── OUTER RING with glow ──
+        ctx.save();
+        ctx.translate(center, center);
+
+        // Outer dark ring
+        ctx.beginPath();
+        ctx.arc(0, 0, outerRadius, 0, 2 * Math.PI);
+        ctx.strokeStyle = '#1c2128';
+        ctx.lineWidth = 14;
+        ctx.stroke();
+
+        // Outer ring border (cyan glow)
+        ctx.beginPath();
+        ctx.arc(0, 0, outerRadius + 5, 0, 2 * Math.PI);
+        ctx.strokeStyle = 'rgba(6, 182, 212, 0.25)';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.arc(0, 0, outerRadius - 5, 0, 2 * Math.PI);
+        ctx.strokeStyle = 'rgba(6, 182, 212, 0.15)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        // Dot markers around the rim
+        const numDots = items.length * 4;
+        for (let i = 0; i < numDots; i++) {
+            const angle = (i / numDots) * 2 * Math.PI;
+            const dotX = Math.cos(angle) * outerRadius;
+            const dotY = Math.sin(angle) * outerRadius;
+            ctx.beginPath();
+            ctx.arc(dotX, dotY, i % 4 === 0 ? 3 : 1.5, 0, 2 * Math.PI);
+            ctx.fillStyle = i % 4 === 0 ? '#06b6d4' : 'rgba(255,255,255,0.3)';
+            ctx.fill();
+        }
+
+        ctx.restore();
+
+        // ── WHEEL SLICES ──
+        ctx.save();
+        ctx.translate(center, center);
+        ctx.rotate(rotation);
+
+        items.forEach((item, i) => {
+            const startAngle = i * sliceAngle;
+            const endAngle = startAngle + sliceAngle;
+
+            // Slice fill
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.arc(0, 0, radius, startAngle, endAngle);
+            ctx.closePath();
+
+            // Gradient fill for each slice
+            const midAngle = startAngle + sliceAngle / 2;
+            const grd = ctx.createRadialGradient(0, 0, radius * 0.3, 0, 0, radius);
+            const baseColor = WHEEL_COLORS[i % WHEEL_COLORS.length];
+            grd.addColorStop(0, baseColor + 'cc');
+            grd.addColorStop(1, baseColor);
+            ctx.fillStyle = grd;
+            ctx.fill();
+
+            // Slice border
+            ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+
+            // Text & Icon
+            ctx.save();
+            ctx.rotate(startAngle + sliceAngle / 2);
+            ctx.textAlign = 'right';
+
+            // Text shadow for readability
+            ctx.shadowColor = 'rgba(0,0,0,0.5)';
+            ctx.shadowBlur = 3;
+            ctx.shadowOffsetX = 1;
+            ctx.shadowOffsetY = 1;
+            ctx.fillStyle = '#fff';
+
+            // Emoji icon
+            ctx.font = '22px sans-serif';
+            ctx.fillText(item.icon, radius - 18, 7);
+
+            // Name
+            ctx.font = 'bold 11px Inter, system-ui, sans-serif';
+            const name = item.name.length > 10 ? item.name.substring(0, 9) + '…' : item.name;
+            ctx.fillText(name, radius - 44, 5);
+
+            ctx.shadowBlur = 0;
+            ctx.restore();
+        });
+
+        // Inner dark hub circle
+        ctx.beginPath();
+        ctx.arc(0, 0, 40, 0, 2 * Math.PI);
+        const hubGrd = ctx.createRadialGradient(0, 0, 10, 0, 0, 40);
+        hubGrd.addColorStop(0, '#1c2128');
+        hubGrd.addColorStop(1, '#0d1117');
+        ctx.fillStyle = hubGrd;
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(6, 182, 212, 0.3)';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        ctx.restore();
+    }
+
+    function spinWheel() {
+        if (isSpinning || spinCharges <= 0 || rewardPool.length === 0) {
+            if (rewardPool.length === 0) {
+                showToast('Thêm phần thưởng trước khi quay!', 'error');
+            }
+            return;
+        }
+
+        spinCharges--;
+        isSpinning = true;
+        document.getElementById('spinBtn').disabled = true;
+        document.getElementById('spinCharges').textContent = `${spinCharges} CHARGE${spinCharges !== 1 ? 'S' : ''}`;
+
+        // Pick winner by rarity weight
+        const winner = pickWeightedReward();
+        const winnerIndex = rewardPool.indexOf(winner);
+        const sliceAngle = (2 * Math.PI) / rewardPool.length;
+
+        // Calculate target angle: the pointer is at top (12 o'clock = -90deg = -PI/2 from right)
+        // We want the winner's slice center to align with the top
+        // But the canvas rotation starts from 3 o'clock, so the top is at -PI/2
+        const sliceCenter = winnerIndex * sliceAngle + sliceAngle / 2;
+        // We want (rotation + sliceCenter) % 2PI = 3PI/2 (top in canvas coords since canvas 0 is 3 o'clock, top is -PI/2 = 3PI/2)
+        const targetStop = (3 * Math.PI / 2) - sliceCenter;
+
+        // Add extra full rotations for visual effect
+        const extraRotations = 5 + Math.random() * 3; // 5-8 full rotations
+        const targetAngle = spinAngle + extraRotations * 2 * Math.PI + (targetStop - (spinAngle % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+
+        const startAngle = spinAngle;
+        const totalAngle = targetAngle - startAngle;
+        const duration = 4000 + Math.random() * 1000; // 4-5s
+        const startTime = performance.now();
+
+        function animateSpin(now) {
+            const elapsed = now - startTime;
+            const progress = Math.min(elapsed / duration, 1);
+
+            // Ease out cubic for deceleration effect
+            const eased = 1 - Math.pow(1 - progress, 3);
+
+            spinAngle = startAngle + totalAngle * eased;
+            drawSpinWheel(spinAngle);
+
+            if (progress < 1) {
+                requestAnimationFrame(animateSpin);
+            } else {
+                isSpinning = false;
+                spinAngle = targetAngle;
+                drawSpinWheel(spinAngle);
+
+                // Show result after short delay
+                setTimeout(() => {
+                    showRewardWon(winner);
+
+                    // Update history with reward
+                    if (focusHistory.length > 0 && !focusHistory[0].reward) {
+                        focusHistory[0].reward = { name: winner.name, icon: winner.icon, rarity: winner.rarity };
+                        saveHistory();
+                        renderFocusHistory();
+                    }
+                }, 500);
+            }
+        }
+
+        requestAnimationFrame(animateSpin);
+    }
+
+    function pickWeightedReward() {
+        // Group by rarity, then pick rarity based on weight, then random item from that rarity
+        const rarityCounts = {};
+        rewardPool.forEach(r => {
+            rarityCounts[r.rarity] = (rarityCounts[r.rarity] || 0) + 1;
+        });
+
+        // Build weighted rarity pool
+        const rarityPool = [];
+        Object.entries(RARITY_CONFIG).forEach(([key, cfg]) => {
+            if (rarityCounts[key]) {
+                rarityPool.push({ rarity: key, weight: cfg.weight });
+            }
+        });
+
+        // Pick rarity
+        const totalWeight = rarityPool.reduce((sum, r) => sum + r.weight, 0);
+        let rand = Math.random() * totalWeight;
+        let selectedRarity = rarityPool[0]?.rarity || 'common';
+        for (const r of rarityPool) {
+            rand -= r.weight;
+            if (rand <= 0) {
+                selectedRarity = r.rarity;
+                break;
+            }
+        }
+
+        // Pick random item from that rarity
+        const candidates = rewardPool.filter(r => r.rarity === selectedRarity);
+        if (candidates.length === 0) return rewardPool[Math.floor(Math.random() * rewardPool.length)];
+        return candidates[Math.floor(Math.random() * candidates.length)];
+    }
+
+    function showRewardWon(reward) {
+        const overlay = document.getElementById('rewardWonOverlay');
+        document.getElementById('rewardWonIcon').textContent = reward.icon;
+        document.getElementById('rewardWonName').textContent = reward.name;
+        const rarityEl = document.getElementById('rewardWonRarity');
+        rarityEl.textContent = RARITY_CONFIG[reward.rarity].label;
+        rarityEl.className = 'reward-won-rarity ' + reward.rarity;
+        overlay.classList.add('show');
+    }
+
+    function claimReward() {
+        document.getElementById('rewardWonOverlay').classList.remove('show');
+
+        // If still has charges, keep modal open; otherwise close
+        if (spinCharges > 0) {
+            document.getElementById('spinBtn').disabled = false;
+            document.getElementById('spinCharges').textContent = `${spinCharges} CHARGE${spinCharges !== 1 ? 'S' : ''}`;
+        } else {
+            closeSpinWheel();
+        }
+
+        showToast('🎁 Phần thưởng đã được nhận!', 'success');
+    }
+
+    // ── FOCUS HISTORY ──
+    function renderFocusHistory() {
+        const container = document.getElementById('focusHistoryList');
+        if (!container) return;
+
+        if (focusHistory.length === 0) {
+            container.innerHTML = '<div class="empty-state-sm">Chưa có phiên tập trung nào</div>';
+            return;
+        }
+
+        container.innerHTML = focusHistory.slice(0, 20).map(h => {
+            const config = MODES[h.mode] || MODES.deepwork;
+            const mins = Math.floor(h.duration / 60);
+            const dt = new Date(h.date);
+            const dateStr = `${dt.getDate()}/${dt.getMonth() + 1} – ${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`;
+            const rewardHtml = h.reward
+                ? `<div class="fh-reward">
+                        <div class="fh-reward-name">${h.reward.icon} ${h.reward.name}</div>
+                        <div class="fh-reward-rarity ${h.reward.rarity}">${RARITY_CONFIG[h.reward.rarity]?.label || ''}</div>
+                   </div>`
+                : `<div class="fh-reward"><div class="fh-reward-name" style="color:var(--text-dim)">Chưa quay</div></div>`;
+
+            return `
+                <div class="focus-history-item">
+                    <div class="fh-icon"><i class="fa-solid fa-brain"></i></div>
+                    <div class="fh-info">
+                        <div class="fh-title">${config.label} – ${mins} phút</div>
+                        <div class="fh-meta">${dateStr} · +${h.points} pts</div>
+                    </div>
+                    ${rewardHtml}
+                </div>
+            `;
+        }).join('');
+    }
+
+    // Public API
+    return {
+        init,
+        removeReward: (id) => {
+            removeReward(id);
+        },
+    };
+})();
+
+// Initialize Focus Timer when DOM is ready
+document.addEventListener('DOMContentLoaded', () => {
+    FocusTimer.init();
+    FocusMusic.init();
+});
+
+// ============================================================
+// 🎵 FOCUS MUSIC MODULE
+// ============================================================
+const FocusMusic = (() => {
+    let playlist = JSON.parse(localStorage.getItem('habitflow_music_playlist') || '[]');
+    let currentTrackId = null;
+
+    function savePlaylist() {
+        localStorage.setItem('habitflow_music_playlist', JSON.stringify(playlist));
+    }
+
+    // Extract YouTube video ID from various URL formats
+    function extractYouTubeId(url) {
+        if (!url) return null;
+        const patterns = [
+            /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/v\/|youtube\.com\/shorts\/|youtube\.com\/live\/)([a-zA-Z0-9_-]{11})/,
+            /^([a-zA-Z0-9_-]{11})$/,
+        ];
+        for (const pat of patterns) {
+            const match = url.match(pat);
+            if (match) return match[1];
+        }
+        return null;
+    }
+
+    function init() {
+        // Add button
+        document.getElementById('addMusicBtn').addEventListener('click', addTrack);
+
+        // Enter key on inputs
+        document.getElementById('musicLinkInput').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') addTrack();
+        });
+        document.getElementById('musicNameInput').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') addTrack();
+        });
+
+        // Minimize toggle
+        document.getElementById('musicMinimize').addEventListener('click', () => {
+            const btn = document.getElementById('musicMinimize');
+            const content = document.getElementById('musicContent');
+            btn.classList.toggle('collapsed');
+            content.classList.toggle('collapsed');
+        });
+
+        // Suggestion chips
+        document.querySelectorAll('.music-chip').forEach(chip => {
+            chip.addEventListener('click', () => {
+                const url = chip.dataset.url;
+                const name = chip.dataset.name;
+                const videoId = extractYouTubeId(url);
+                if (!videoId) return;
+
+                // Check if already in playlist
+                const exists = playlist.find(t => t.videoId === videoId);
+                if (exists) {
+                    playTrack(exists.id);
+                    return;
+                }
+
+                // Add and play
+                const track = {
+                    id: 'mt_' + Date.now(),
+                    name: name || 'YouTube Video',
+                    videoId,
+                    url,
+                    addedAt: new Date().toISOString(),
+                };
+                playlist.push(track);
+                savePlaylist();
+                renderPlaylist();
+                playTrack(track.id);
+                showToast('🎵 Đã thêm và phát nhạc!', 'success');
+            });
+        });
+
+        renderPlaylist();
+    }
+
+    function addTrack() {
+        const linkInput = document.getElementById('musicLinkInput');
+        const nameInput = document.getElementById('musicNameInput');
+        const url = linkInput.value.trim();
+        const name = nameInput.value.trim();
+
+        if (!url) {
+            showToast('Vui lòng dán link YouTube!', 'error');
+            return;
+        }
+
+        const videoId = extractYouTubeId(url);
+        if (!videoId) {
+            showToast('Link YouTube không hợp lệ!', 'error');
+            return;
+        }
+
+        // Check duplicate
+        if (playlist.find(t => t.videoId === videoId)) {
+            showToast('Bài nhạc này đã có trong playlist!', 'error');
+            return;
+        }
+
+        const track = {
+            id: 'mt_' + Date.now(),
+            name: name || `YouTube Video (${videoId})`,
+            videoId,
+            url,
+            addedAt: new Date().toISOString(),
+        };
+
+        playlist.push(track);
+        savePlaylist();
+        renderPlaylist();
+
+        // Clear inputs
+        linkInput.value = '';
+        nameInput.value = '';
+
+        // Auto-play
+        playTrack(track.id);
+
+        showToast('🎵 Đã thêm nhạc vào playlist!', 'success');
+    }
+
+    function removeTrack(id) {
+        playlist = playlist.filter(t => t.id !== id);
+        savePlaylist();
+        renderPlaylist();
+
+        // If removing current track, stop player
+        if (currentTrackId === id) {
+            stopPlayer();
+        }
+    }
+
+    function playTrack(id) {
+        const track = playlist.find(t => t.id === id);
+        if (!track) return;
+
+        currentTrackId = id;
+
+        // Hide empty, show frame
+        document.getElementById('musicPlayerEmpty').style.display = 'none';
+        const frame = document.getElementById('musicPlayerFrame');
+        frame.style.display = 'block';
+        const iframe = document.getElementById('musicIframe');
+        iframe.src = `https://www.youtube.com/embed/${track.videoId}?autoplay=1&rel=0`;
+
+        // Now playing bar
+        const nowPlaying = document.getElementById('musicNowPlaying');
+        nowPlaying.style.display = 'flex';
+        document.getElementById('musicNowPlayingName').textContent = track.name;
+
+        // Update playlist UI
+        renderPlaylist();
+    }
+
+    function stopPlayer() {
+        currentTrackId = null;
+        document.getElementById('musicPlayerEmpty').style.display = 'flex';
+        document.getElementById('musicPlayerFrame').style.display = 'none';
+        document.getElementById('musicIframe').src = '';
+        document.getElementById('musicNowPlaying').style.display = 'none';
+        renderPlaylist();
+    }
+
+    function renderPlaylist() {
+        const container = document.getElementById('musicPlaylist');
+        const countEl = document.getElementById('musicPlaylistCount');
+
+        countEl.textContent = `${playlist.length} bài`;
+
+        if (playlist.length === 0) {
+            container.innerHTML = `
+                <div class="music-playlist-empty">
+                    <i class="fa-regular fa-face-smile"></i>
+                    <p>Thêm nhạc yêu thích để tập trung tốt hơn!</p>
+                </div>
+            `;
+            return;
+        }
+
+        container.innerHTML = playlist.map(track => {
+            const isPlaying = track.id === currentTrackId;
+            return `
+                <div class="music-track ${isPlaying ? 'playing' : ''}" data-id="${track.id}">
+                    <div class="music-track-play" onclick="FocusMusic.play('${track.id}')">
+                        <i class="fa-solid ${isPlaying ? 'fa-pause' : 'fa-play'}"></i>
+                    </div>
+                    <div class="music-track-info" onclick="FocusMusic.play('${track.id}')">
+                        <div class="music-track-name">${track.name}</div>
+                        <div class="music-track-src"><i class="fa-brands fa-youtube"></i> YouTube</div>
+                    </div>
+                    <button class="music-track-delete" onclick="event.stopPropagation(); FocusMusic.remove('${track.id}')" title="Xóa">
+                        <i class="fa-solid fa-trash"></i>
+                    </button>
+                </div>
+            `;
+        }).join('');
+    }
+
+    // Public API
+    return {
+        init,
+        play: (id) => {
+            if (currentTrackId === id) {
+                stopPlayer();
+            } else {
+                playTrack(id);
+            }
+        },
+        remove: (id) => removeTrack(id),
+        getPlaylist: () => playlist,
+        getCurrentTrackId: () => currentTrackId,
+    };
+})();
+
+// ============================================================
+// 🎧 AMBIENT SOUND MIXER MODULE (Web Audio API)
+// ============================================================
+const AmbientMixer = (() => {
+    let audioCtx = null;
+    let masterGain = null;
+    const channels = {};
+    let activePreset = null;
+
+    // Sound definitions
+    const SOUNDS = {
+        rain: { toggle: 'toggleRain', vol: 'volRain', label: 'Rain' },
+        thunder: { toggle: 'toggleThunder', vol: 'volThunder', label: 'Thunder' },
+        fire: { toggle: 'toggleFire', vol: 'volFire', label: 'Fireplace' },
+        ocean: { toggle: 'toggleOcean', vol: 'volOcean', label: 'Ocean' },
+        birds: { toggle: 'toggleBirds', vol: 'volBirds', label: 'Birds' },
+        wind: { toggle: 'toggleWind', vol: 'volWind', label: 'Wind' },
+        cafe: { toggle: 'toggleCafe', vol: 'volCafe', label: 'Café' },
+        crickets: { toggle: 'toggleCrickets', vol: 'volCrickets', label: 'Crickets' },
+    };
+
+    const PRESETS = {
+        rainforest: { rain: 70, birds: 55, wind: 30, thunder: 0, fire: 0, ocean: 0, cafe: 0, crickets: 20 },
+        coffeeshop: { cafe: 65, rain: 25, fire: 0, birds: 0, wind: 0, thunder: 0, ocean: 0, crickets: 0 },
+        beach: { ocean: 75, wind: 35, birds: 40, rain: 0, thunder: 0, fire: 0, cafe: 0, crickets: 0 },
+        library: { rain: 15, cafe: 10, fire: 0, birds: 0, wind: 5, thunder: 0, ocean: 0, crickets: 0 },
+        storm: { rain: 80, thunder: 60, wind: 50, fire: 0, birds: 0, ocean: 0, cafe: 0, crickets: 0 },
+        off: { rain: 0, thunder: 0, fire: 0, ocean: 0, birds: 0, wind: 0, cafe: 0, crickets: 0 },
+    };
+
+    function ensureAudioCtx() {
+        if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            masterGain = audioCtx.createGain();
+            masterGain.gain.value = 0.7;
+            masterGain.connect(audioCtx.destination);
+        }
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+    }
+
+    // ── NOISE GENERATORS ──────────────────────────
+    function createWhiteNoise() {
+        const bufferSize = audioCtx.sampleRate * 4;
+        const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) {
+            data[i] = Math.random() * 2 - 1;
+        }
+        const source = audioCtx.createBufferSource();
+        source.buffer = buffer;
+        source.loop = true;
+        return source;
+    }
+
+    // ── SOUND FACTORY ─────────────────────────────
+    function createSound(type) {
+        ensureAudioCtx();
+        const gain = audioCtx.createGain();
+        gain.gain.value = 0;
+        gain.connect(masterGain);
+        const nodes = [];
+
+        switch (type) {
+            case 'rain': {
+                const noise = createWhiteNoise();
+                const bp = audioCtx.createBiquadFilter();
+                bp.type = 'bandpass';
+                bp.frequency.value = 800;
+                bp.Q.value = 0.5;
+                const hp = audioCtx.createBiquadFilter();
+                hp.type = 'highpass';
+                hp.frequency.value = 200;
+                noise.connect(bp);
+                bp.connect(hp);
+                hp.connect(gain);
+                noise.start();
+                nodes.push(noise);
+                break;
+            }
+            case 'thunder': {
+                const noise = createWhiteNoise();
+                const lp = audioCtx.createBiquadFilter();
+                lp.type = 'lowpass';
+                lp.frequency.value = 150;
+                lp.Q.value = 1;
+                const rumbleGain = audioCtx.createGain();
+                rumbleGain.gain.value = 0.6;
+                noise.connect(lp);
+                lp.connect(rumbleGain);
+                rumbleGain.connect(gain);
+                noise.start();
+                nodes.push(noise);
+                // Random rumble bursts
+                const burstInterval = setInterval(() => {
+                    if (!channels.thunder || !channels.thunder.active) {
+                        clearInterval(burstInterval);
+                        return;
+                    }
+                    const now = audioCtx.currentTime;
+                    rumbleGain.gain.setValueAtTime(0.3, now);
+                    rumbleGain.gain.linearRampToValueAtTime(1.5, now + 0.1);
+                    rumbleGain.gain.exponentialRampToValueAtTime(0.3, now + 2 + Math.random() * 2);
+                }, 4000 + Math.random() * 8000);
+                nodes._interval = burstInterval;
+                break;
+            }
+            case 'fire': {
+                const noise = createWhiteNoise();
+                const lp = audioCtx.createBiquadFilter();
+                lp.type = 'lowpass';
+                lp.frequency.value = 400;
+                const crackleGain = audioCtx.createGain();
+                // Modulate for crackling
+                const lfo = audioCtx.createOscillator();
+                lfo.type = 'sawtooth';
+                lfo.frequency.value = 3 + Math.random() * 5;
+                const lfoGain = audioCtx.createGain();
+                lfoGain.gain.value = 0.15;
+                lfo.connect(lfoGain);
+                lfoGain.connect(crackleGain.gain);
+                crackleGain.gain.value = 0.5;
+                noise.connect(lp);
+                lp.connect(crackleGain);
+                crackleGain.connect(gain);
+                noise.start();
+                lfo.start();
+                nodes.push(noise, lfo);
+                break;
+            }
+            case 'ocean': {
+                const noise = createWhiteNoise();
+                const lp = audioCtx.createBiquadFilter();
+                lp.type = 'lowpass';
+                lp.frequency.value = 500;
+                const waveGain = audioCtx.createGain();
+                waveGain.gain.value = 0.5;
+                // Slow LFO for wave swell
+                const lfo = audioCtx.createOscillator();
+                lfo.type = 'sine';
+                lfo.frequency.value = 0.12;
+                const lfoGain = audioCtx.createGain();
+                lfoGain.gain.value = 0.4;
+                lfo.connect(lfoGain);
+                lfoGain.connect(waveGain.gain);
+                noise.connect(lp);
+                lp.connect(waveGain);
+                waveGain.connect(gain);
+                noise.start();
+                lfo.start();
+                nodes.push(noise, lfo);
+                break;
+            }
+            case 'birds': {
+                // Random bird chirps using oscillators
+                const birdInterval = setInterval(() => {
+                    if (!channels.birds || !channels.birds.active) {
+                        clearInterval(birdInterval);
+                        return;
+                    }
+                    const chirpGain = audioCtx.createGain();
+                    chirpGain.gain.value = 0;
+                    chirpGain.connect(gain);
+                    const osc = audioCtx.createOscillator();
+                    osc.type = 'sine';
+                    const baseFreq = 2000 + Math.random() * 3000;
+                    osc.frequency.value = baseFreq;
+                    osc.connect(chirpGain);
+                    const now = audioCtx.currentTime;
+                    const dur = 0.05 + Math.random() * 0.15;
+                    // Chirp envelope
+                    chirpGain.gain.setValueAtTime(0, now);
+                    chirpGain.gain.linearRampToValueAtTime(0.15, now + dur * 0.3);
+                    chirpGain.gain.linearRampToValueAtTime(0, now + dur);
+                    // Frequency slide
+                    osc.frequency.setValueAtTime(baseFreq, now);
+                    osc.frequency.linearRampToValueAtTime(baseFreq * (1 + Math.random() * 0.3), now + dur * 0.5);
+                    osc.frequency.linearRampToValueAtTime(baseFreq * 0.9, now + dur);
+                    osc.start(now);
+                    osc.stop(now + dur + 0.01);
+                    // Sometimes do double chirp
+                    if (Math.random() > 0.5) {
+                        const osc2 = audioCtx.createOscillator();
+                        osc2.type = 'sine';
+                        osc2.frequency.value = baseFreq * 1.2;
+                        osc2.connect(chirpGain);
+                        const delay = dur + 0.05;
+                        chirpGain.gain.setValueAtTime(0, now + delay);
+                        chirpGain.gain.linearRampToValueAtTime(0.12, now + delay + dur * 0.3);
+                        chirpGain.gain.linearRampToValueAtTime(0, now + delay + dur);
+                        osc2.start(now + delay);
+                        osc2.stop(now + delay + dur + 0.01);
+                    }
+                }, 300 + Math.random() * 1500);
+                nodes._interval = birdInterval;
+                break;
+            }
+            case 'wind': {
+                const noise = createWhiteNoise();
+                const lp = audioCtx.createBiquadFilter();
+                lp.type = 'lowpass';
+                lp.frequency.value = 300;
+                const windGain = audioCtx.createGain();
+                windGain.gain.value = 0.5;
+                // Slow modulation
+                const lfo = audioCtx.createOscillator();
+                lfo.type = 'sine';
+                lfo.frequency.value = 0.08;
+                const lfoGain = audioCtx.createGain();
+                lfoGain.gain.value = 0.3;
+                lfo.connect(lfoGain);
+                lfoGain.connect(windGain.gain);
+                // Higher layer
+                const hp = audioCtx.createBiquadFilter();
+                hp.type = 'highpass';
+                hp.frequency.value = 100;
+                noise.connect(lp);
+                lp.connect(hp);
+                hp.connect(windGain);
+                windGain.connect(gain);
+                noise.start();
+                lfo.start();
+                nodes.push(noise, lfo);
+                break;
+            }
+            case 'cafe': {
+                // Pink-ish noise for cafe ambience
+                const noise = createWhiteNoise();
+                const lp = audioCtx.createBiquadFilter();
+                lp.type = 'lowpass';
+                lp.frequency.value = 2000;
+                const bp = audioCtx.createBiquadFilter();
+                bp.type = 'bandpass';
+                bp.frequency.value = 600;
+                bp.Q.value = 0.3;
+                const cafeGain = audioCtx.createGain();
+                cafeGain.gain.value = 0.3;
+                // Subtle modulation for "murmur"
+                const lfo = audioCtx.createOscillator();
+                lfo.type = 'sine';
+                lfo.frequency.value = 0.5;
+                const lfoGain = audioCtx.createGain();
+                lfoGain.gain.value = 0.1;
+                lfo.connect(lfoGain);
+                lfoGain.connect(cafeGain.gain);
+                noise.connect(lp);
+                lp.connect(bp);
+                bp.connect(cafeGain);
+                cafeGain.connect(gain);
+                noise.start();
+                lfo.start();
+                nodes.push(noise, lfo);
+                break;
+            }
+            case 'crickets': {
+                const cricketInterval = setInterval(() => {
+                    if (!channels.crickets || !channels.crickets.active) {
+                        clearInterval(cricketInterval);
+                        return;
+                    }
+                    const cricketGain = audioCtx.createGain();
+                    cricketGain.gain.value = 0;
+                    cricketGain.connect(gain);
+                    const osc = audioCtx.createOscillator();
+                    osc.type = 'sine';
+                    const freq = 4000 + Math.random() * 2000;
+                    osc.frequency.value = freq;
+                    osc.connect(cricketGain);
+                    const now = audioCtx.currentTime;
+                    const numPulses = 3 + Math.floor(Math.random() * 5);
+                    const pulseDur = 0.02;
+                    const pulseGap = 0.03;
+                    for (let p = 0; p < numPulses; p++) {
+                        const t = now + p * (pulseDur + pulseGap);
+                        cricketGain.gain.setValueAtTime(0, t);
+                        cricketGain.gain.linearRampToValueAtTime(0.08, t + pulseDur * 0.5);
+                        cricketGain.gain.linearRampToValueAtTime(0, t + pulseDur);
+                    }
+                    const totalDur = numPulses * (pulseDur + pulseGap);
+                    osc.start(now);
+                    osc.stop(now + totalDur + 0.01);
+                }, 200 + Math.random() * 800);
+                nodes._interval = cricketInterval;
+                break;
+            }
+        }
+
+        return { gain, nodes, active: false };
+    }
+
+    // ── TOGGLE & VOLUME ──
+    function toggleSound(type) {
+        ensureAudioCtx();
+        const cfg = SOUNDS[type];
+        const channel = document.querySelector(`.ambient-channel[data-sound="${type}"]`);
+        const slider = document.getElementById(cfg.vol);
+
+        if (channels[type] && channels[type].active) {
+            // Stop
+            channels[type].active = false;
+            const ch = channels[type];
+            ch.gain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.3);
+            setTimeout(() => {
+                ch.nodes.forEach(n => { try { n.stop(); } catch (e) { } });
+                if (ch.nodes._interval) clearInterval(ch.nodes._interval);
+                ch.gain.disconnect();
+            }, 400);
+            delete channels[type];
+            channel.classList.remove('active');
+        } else {
+            // Start
+            const ch = createSound(type);
+            ch.active = true;
+            channels[type] = ch;
+            const vol = (slider.value / 100) * (masterGain.gain.value);
+            ch.gain.gain.setValueAtTime(0, audioCtx.currentTime);
+            ch.gain.gain.linearRampToValueAtTime(vol * 0.5, audioCtx.currentTime + 0.5);
+            channel.classList.add('active');
+        }
+        updateActivePreset();
+    }
+
+    function setVolume(type, value) {
+        if (!channels[type] || !channels[type].active) return;
+        const vol = (value / 100) * 0.5;
+        channels[type].gain.gain.linearRampToValueAtTime(vol, audioCtx.currentTime + 0.1);
+    }
+
+    function setMasterVolume(value) {
+        if (!masterGain) return;
+        masterGain.gain.linearRampToValueAtTime(value / 100, audioCtx.currentTime + 0.1);
+        document.getElementById('ambientMasterPct').textContent = value + '%';
+    }
+
+    function stopAll() {
+        Object.keys(channels).forEach(type => {
+            if (channels[type] && channels[type].active) {
+                toggleSound(type);
+            }
+        });
+        document.querySelectorAll('.ambient-preset-btn').forEach(b => b.classList.remove('active'));
+        activePreset = null;
+    }
+
+    function applyPreset(name) {
+        const preset = PRESETS[name];
+        if (!preset) return;
+
+        if (name === 'off') {
+            stopAll();
+            return;
+        }
+
+        ensureAudioCtx();
+
+        // Stop all first
+        Object.keys(channels).forEach(type => {
+            if (channels[type] && channels[type].active) {
+                channels[type].active = false;
+                const ch = channels[type];
+                ch.gain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.2);
+                setTimeout(() => {
+                    ch.nodes.forEach(n => { try { n.stop(); } catch (e) { } });
+                    if (ch.nodes._interval) clearInterval(ch.nodes._interval);
+                    ch.gain.disconnect();
+                }, 300);
+                delete channels[type];
+                document.querySelector(`.ambient-channel[data-sound="${type}"]`)?.classList.remove('active');
+            }
+        });
+
+        // Start preset sounds
+        setTimeout(() => {
+            Object.entries(preset).forEach(([type, vol]) => {
+                const slider = document.getElementById(SOUNDS[type]?.vol);
+                if (slider) slider.value = vol;
+
+                if (vol > 0) {
+                    const ch = createSound(type);
+                    ch.active = true;
+                    channels[type] = ch;
+                    const v = (vol / 100) * 0.5;
+                    ch.gain.gain.setValueAtTime(0, audioCtx.currentTime);
+                    ch.gain.gain.linearRampToValueAtTime(v, audioCtx.currentTime + 0.8);
+                    document.querySelector(`.ambient-channel[data-sound="${type}"]`)?.classList.add('active');
+                }
+            });
+        }, 350);
+
+        // Update preset buttons
+        document.querySelectorAll('.ambient-preset-btn').forEach(b => {
+            b.classList.toggle('active', b.dataset.preset === name);
+        });
+        activePreset = name;
+    }
+
+    function updateActivePreset() {
+        // Check if current state matches any preset
+        document.querySelectorAll('.ambient-preset-btn').forEach(b => b.classList.remove('active'));
+        activePreset = null;
+    }
+
+    function init() {
+        // Toggle buttons
+        Object.entries(SOUNDS).forEach(([type, cfg]) => {
+            const toggleBtn = document.getElementById(cfg.toggle);
+            if (toggleBtn) {
+                toggleBtn.addEventListener('click', () => toggleSound(type));
+            }
+
+            const slider = document.getElementById(cfg.vol);
+            if (slider) {
+                slider.addEventListener('input', () => setVolume(type, slider.value));
+            }
+        });
+
+        // Master volume
+        const masterSlider = document.getElementById('ambientMasterVol');
+        if (masterSlider) {
+            masterSlider.addEventListener('input', () => setMasterVolume(masterSlider.value));
+        }
+
+        // Preset buttons
+        document.querySelectorAll('.ambient-preset-btn').forEach(btn => {
+            btn.addEventListener('click', () => applyPreset(btn.dataset.preset));
+        });
+
+        // Minimize toggle
+        document.getElementById('ambientMinimize')?.addEventListener('click', () => {
+            const btn = document.getElementById('ambientMinimize');
+            const content = document.getElementById('ambientContent');
+            btn.classList.toggle('collapsed');
+            content.classList.toggle('collapsed');
+        });
+    }
+
+    return { init, applyPreset, toggleSound, setMasterVolume, getActiveChannels: () => Object.keys(channels).filter(k => channels[k]?.active) };
+})();
+
+// Initialize Ambient Mixer
+document.addEventListener('DOMContentLoaded', () => {
+    AmbientMixer.init();
+});
+
+// ============================================================
+// 📅 DAILY FOCUS TRACKER
+// ============================================================
+const DailyFocusTracker = (() => {
+    const DAY_NAMES_SHORT = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
+
+    function toDateKey(d) {
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    }
+
+    function getHistory() {
+        try {
+            return JSON.parse(localStorage.getItem('habitflow_focus_history') || '[]');
+        } catch (e) { return []; }
+    }
+
+    function aggregateByDate() {
+        const history = getHistory();
+        const map = {}; // { 'YYYY-MM-DD': { sessions, totalSec, xp, points } }
+        history.forEach(h => {
+            const d = new Date(h.date);
+            const key = toDateKey(d);
+            if (!map[key]) map[key] = { sessions: 0, totalSec: 0, xp: 0, points: 0 };
+            map[key].sessions++;
+            map[key].totalSec += (h.duration || 0);
+            map[key].points += (h.points || 0);
+            // Estimate XP same as award logic
+            const baseXP = h.points || 0;
+            const bonusXP = Math.max(0, Math.floor(((h.duration || 0) - 25 * 60) / (10 * 60)) * 5);
+            map[key].xp += baseXP + bonusXP;
+        });
+        return map;
+    }
+    let viewYear, viewMonth;
+    const MONTH_NAMES = ['Tháng 1', 'Tháng 2', 'Tháng 3', 'Tháng 4', 'Tháng 5', 'Tháng 6',
+        'Tháng 7', 'Tháng 8', 'Tháng 9', 'Tháng 10', 'Tháng 11', 'Tháng 12'];
+    const MONTH_SHORT = ['Th1', 'Th2', 'Th3', 'Th4', 'Th5', 'Th6',
+        'Th7', 'Th8', 'Th9', 'Th10', 'Th11', 'Th12'];
+
+    function init() {
+        const now = new Date();
+        viewYear = now.getFullYear();
+        viewMonth = now.getMonth();
+
+        // Month nav
+        document.getElementById('focusContribPrev')?.addEventListener('click', () => {
+            viewMonth--;
+            if (viewMonth < 0) { viewMonth = 11; viewYear--; }
+            const data = aggregateByDate();
+            renderMonthlyGraph(data);
+        });
+        document.getElementById('focusContribNext')?.addEventListener('click', () => {
+            viewMonth++;
+            if (viewMonth > 11) { viewMonth = 0; viewYear++; }
+            const data = aggregateByDate();
+            renderMonthlyGraph(data);
+        });
+
+        render();
+    }
+
+    function render() {
+        const data = aggregateByDate();
+        renderTodaySummary(data);
+        renderMonthlyGraph(data);
+        renderWeeklyChart(data);
+        renderYearlyGraph(data);
+    }
+
+    function renderTodaySummary(data) {
+        const today = new Date();
+        const key = toDateKey(today);
+        const d = data[key] || { sessions: 0, totalSec: 0, xp: 0, points: 0 };
+
+        document.getElementById('dailyTodayDate').textContent =
+            `${today.getDate()}/${today.getMonth() + 1}/${today.getFullYear()}`;
+
+        document.getElementById('dailyTodaySessions').textContent = d.sessions;
+
+        const mins = Math.round(d.totalSec / 60);
+        document.getElementById('dailyTodayTime').textContent =
+            mins >= 60 ? (mins / 60).toFixed(1) + 'h' : mins + 'm';
+
+        document.getElementById('dailyTodayXP').textContent = d.xp;
+        document.getElementById('dailyTodayPoints').textContent = d.points;
+    }
+
+    function getCellLevel(mins) {
+        if (mins >= 90) return 'lv4';
+        if (mins >= 45) return 'lv3';
+        if (mins >= 15) return 'lv2';
+        if (mins > 0) return 'lv1';
+        return '';
+    }
+
+    function buildCellHtml(cursor, data, todayKey) {
+        const key = toDateKey(cursor);
+        const rec = data[key];
+        const mins = rec ? Math.round(rec.totalSec / 60) : 0;
+        const sessions = rec ? rec.sessions : 0;
+        const today = new Date(); today.setHours(0, 0, 0, 0);
+        const isFuture = cursor > today;
+        const isToday = key === todayKey;
+
+        let lvClass = '';
+        if (!isFuture) lvClass = getCellLevel(mins);
+
+        const dateStr = `${cursor.getDate()}/${cursor.getMonth() + 1}/${cursor.getFullYear()}`;
+        let tipText;
+        if (isFuture) tipText = dateStr;
+        else if (mins > 0) tipText = `<strong>${sessions} phiên</strong> • ${mins} phút<br>${dateStr}`;
+        else tipText = `Không tập trung<br>${dateStr}`;
+
+        return { html: `<div class="contrib-cell ${lvClass} ${isToday ? 'today' : ''} ${isFuture ? 'future' : ''}" data-date="${key}"><div class="contrib-tip">${tipText}</div></div>`, sessions: isFuture ? 0 : sessions, mins };
+    }
+
+    // ── MONTHLY GRAPH (Focus page) ──
+    function renderMonthlyGraph(data) {
+        const grid = document.getElementById('contribGrid');
+        const monthLabels = document.getElementById('contribMonthLabels');
+        const totalEl = document.getElementById('contribTotal');
+        const labelEl = document.getElementById('focusContribMonthLabel');
+        const statsEl = document.getElementById('contribMonthStats');
+        if (!grid) return;
+
+        labelEl.textContent = `${MONTH_NAMES[viewMonth]}, ${viewYear}`;
+
+        const today = new Date(); today.setHours(0, 0, 0, 0);
+        const todayKey = toDateKey(today);
+
+        // First day & last day of month
+        const firstOfMonth = new Date(viewYear, viewMonth, 1);
+        const lastOfMonth = new Date(viewYear, viewMonth + 1, 0);
+
+        // Start from Sunday of the first week
+        const startDate = new Date(firstOfMonth);
+        startDate.setDate(firstOfMonth.getDate() - firstOfMonth.getDay());
+
+        // End at Saturday of the last week
+        const endDate = new Date(lastOfMonth);
+        endDate.setDate(lastOfMonth.getDate() + (6 - lastOfMonth.getDay()));
+
+        let weeksHtml = '';
+        let totalSessions = 0;
+        let totalMins = 0;
+        let weekIdx = 0;
+        const cursor = new Date(startDate);
+
+        // Count total weeks first for percentage positioning
+        const totalWeeks = Math.ceil((endDate - startDate + 1) / (7 * 86400000));
+
+        // Week labels
+        let weekLabelsHtml = '';
+
+        while (cursor <= endDate) {
+            let weekHtml = '';
+            const weekStart = new Date(cursor);
+
+            for (let dow = 0; dow < 7; dow++) {
+                const result = buildCellHtml(cursor, data, todayKey);
+                weekHtml += result.html;
+                if (cursor.getMonth() === viewMonth && cursor.getFullYear() === viewYear) {
+                    totalSessions += result.sessions;
+                    totalMins += result.mins;
+                }
+                cursor.setDate(cursor.getDate() + 1);
+            }
+
+            const label = `${weekStart.getDate()}`;
+            const leftPct = (weekIdx / totalWeeks) * 100;
+            weekLabelsHtml += `<span class="contrib-month-label" style="left:${leftPct}%">${label}</span>`;
+
+            weeksHtml += `<div class="contrib-week">${weekHtml}</div>`;
+            weekIdx++;
+        }
+
+        grid.innerHTML = weeksHtml;
+        monthLabels.innerHTML = weekLabelsHtml;
+        totalEl.textContent = `${totalSessions} phiên`;
+
+        const timeStr = totalMins >= 60 ? (totalMins / 60).toFixed(1) + ' giờ' : totalMins + ' phút';
+        statsEl.textContent = `Tổng: ${timeStr} tập trung`;
+    }
+
+    // ── YEARLY GRAPH (Dashboard) ──
+    function renderYearlyGraph(data) {
+        const grid = document.getElementById('dashContribGrid');
+        const monthLabels = document.getElementById('dashContribMonthLabels');
+        const totalEl = document.getElementById('dashContribTotal');
+        if (!grid) return;
+
+        const today = new Date(); today.setHours(0, 0, 0, 0);
+        const todayKey = toDateKey(today);
+
+        // Go back 52 weeks
+        const endOfWeek = new Date(today);
+        endOfWeek.setDate(today.getDate() + (6 - today.getDay()));
+        const startDate = new Date(endOfWeek);
+        startDate.setDate(endOfWeek.getDate() - (52 * 7) + 1);
+        startDate.setDate(startDate.getDate() - startDate.getDay());
+
+        let weeksHtml = '';
+        let monthsHtml = '';
+        let totalSessions = 0;
+        let lastMonth = -1;
+        let weekIdx = 0;
+        const cursor = new Date(startDate);
+        const cellSize = 16;
+
+        while (cursor <= endOfWeek) {
+            let weekHtml = '';
+            for (let dow = 0; dow < 7; dow++) {
+                // Month label on first Sunday of new month
+                if (dow === 0 && cursor.getMonth() !== lastMonth) {
+                    lastMonth = cursor.getMonth();
+                    monthsHtml += `<span class="contrib-month-label" style="left:${weekIdx * cellSize}px">${MONTH_SHORT[lastMonth]}</span>`;
+                }
+                const result = buildCellHtml(cursor, data, todayKey);
+                weekHtml += result.html;
+                totalSessions += result.sessions;
+                cursor.setDate(cursor.getDate() + 1);
+            }
+            weeksHtml += `<div class="contrib-week">${weekHtml}</div>`;
+            weekIdx++;
+        }
+
+        grid.innerHTML = weeksHtml;
+        monthLabels.innerHTML = monthsHtml;
+        totalEl.textContent = `${totalSessions} phiên trong năm qua`;
+    }
+
+    function renderWeeklyChart(data) {
+        const chart = document.getElementById('dailyWeeklyChart');
+        const today = new Date();
+        const dayOfWeek = today.getDay();
+
+        const startOfWeek = new Date(today);
+        startOfWeek.setDate(today.getDate() - dayOfWeek);
+
+        let maxMin = 1;
+        const days = [];
+        for (let i = 0; i < 7; i++) {
+            const d = new Date(startOfWeek);
+            d.setDate(startOfWeek.getDate() + i);
+            const key = toDateKey(d);
+            const rec = data[key];
+            const mins = rec ? Math.round(rec.totalSec / 60) : 0;
+            if (mins > maxMin) maxMin = mins;
+            days.push({ label: DAY_NAMES_SHORT[i], mins, isToday: toDateKey(d) === toDateKey(today) });
+        }
+
+        chart.innerHTML = days.map(d => {
+            const pct = d.mins > 0 ? Math.max(5, (d.mins / maxMin) * 100) : 0;
+            const timeStr = d.mins >= 60 ? (d.mins / 60).toFixed(1) + 'h' : d.mins + 'm';
+            return `
+                <div class="daily-week-bar-wrap ${d.isToday ? 'today' : ''}">
+                    <div class="daily-week-val">${d.mins > 0 ? timeStr : ''}</div>
+                    <div class="daily-week-bar">
+                        <div class="daily-week-fill" style="height: ${pct}%"></div>
+                    </div>
+                    <div class="daily-week-label">${d.label}</div>
+                </div>`;
+        }).join('');
+    }
+
+    return { init, render };
+})();
+
+document.addEventListener('DOMContentLoaded', () => {
+    DailyFocusTracker.init();
+});
+
+// ============================================================
+// ⭐ FOCUS XP SYSTEM
+// ============================================================
+const FocusXP = (() => {
+    const STORAGE_KEY = 'habitflow_focus_xp';
+
+    // XP required = 100 * level (Level 1: 100, Level 2: 200, etc.)
+    function xpForLevel(level) {
+        return 100 * level;
+    }
+
+    // State
+    let state = {
+        level: 1,
+        currentXP: 0,
+        totalXP: 0,
+        totalPoints: 0,
+        totalSessions: 0,
+        totalTimeSec: 0,
+    };
+
+    function load() {
+        try {
+            const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
+            if (saved) Object.assign(state, saved);
+        } catch (e) { }
+    }
+
+    function save() {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    }
+
+    function addXP(amount, pointsEarned, durationSec) {
+        state.totalXP += amount;
+        state.totalPoints += pointsEarned;
+        state.totalSessions++;
+        state.totalTimeSec += durationSec;
+        state.currentXP += amount;
+
+        let didLevelUp = false;
+
+        // Check level up (possibly multiple)
+        while (state.currentXP >= xpForLevel(state.level)) {
+            state.currentXP -= xpForLevel(state.level);
+            state.level++;
+            didLevelUp = true;
+        }
+
+        save();
+        updateUI();
+
+        // Show XP gain popup
+        showXPGain(amount, didLevelUp);
+
+        if (didLevelUp) {
+            // Level up animation
+            const badge = document.getElementById('xpLevelBadge');
+            if (badge) {
+                badge.classList.add('level-up');
+                setTimeout(() => badge.classList.remove('level-up'), 1000);
+            }
+            showToast(`🎉 Level Up! Bạn đã đạt Level ${state.level}!`, 'success');
+        }
+
+        return { didLevelUp, newLevel: state.level };
+    }
+
+    function showXPGain(amount, levelUp) {
+        const popup = document.getElementById('xpGainPopup');
+        const amountEl = document.getElementById('xpGainAmount');
+        if (!popup || !amountEl) return;
+
+        amountEl.textContent = `+${amount} XP${levelUp ? ' 🎉 LEVEL UP!' : ''}`;
+        popup.classList.remove('show');
+        // Force reflow
+        void popup.offsetWidth;
+        popup.classList.add('show');
+
+        setTimeout(() => popup.classList.remove('show'), 2500);
+    }
+
+    function updateUI() {
+        const needed = xpForLevel(state.level);
+        const pct = Math.min((state.currentXP / needed) * 100, 100);
+
+        // Level
+        const levelNum = document.getElementById('xpLevelNum');
+        if (levelNum) levelNum.textContent = state.level;
+
+        // XP Progress
+        const current = document.getElementById('xpCurrent');
+        const neededEl = document.getElementById('xpNeeded');
+        const fill = document.getElementById('xpProgressFill');
+        if (current) current.textContent = state.currentXP;
+        if (neededEl) neededEl.textContent = needed;
+        if (fill) fill.style.width = pct + '%';
+
+        // Stats
+        const totalPts = document.getElementById('xpTotalPoints');
+        if (totalPts) totalPts.textContent = state.totalPoints;
+
+        const totalSes = document.getElementById('xpTotalSessions');
+        if (totalSes) totalSes.textContent = state.totalSessions;
+
+        const totalTime = document.getElementById('xpTotalTime');
+        if (totalTime) {
+            const hours = state.totalTimeSec / 3600;
+            totalTime.textContent = hours < 1
+                ? Math.round(state.totalTimeSec / 60) + 'm'
+                : hours.toFixed(1) + 'h';
+        }
+
+        // Also update spin wheel modal XP display
+        const spinXP = document.getElementById('spinXPGained');
+        if (spinXP) spinXP.textContent = `LVL ${state.level} • ${state.currentXP}/${needed} XP`;
+    }
+
+    function getState() {
+        return { ...state };
+    }
+
+    // ── GOOGLE SHEETS SYNC ──
+    async function syncToServer() {
+        if (!API_URL) return;
+        try {
+            const history = JSON.parse(localStorage.getItem('habitflow_focus_history') || '[]');
+            await apiPost({
+                action: 'syncFocusData',
+                history: history,
+                xpState: state
+            });
+            console.log('✅ Focus data synced to server');
+        } catch (e) {
+            console.log('⚠️ Focus sync failed:', e.message);
+        }
+    }
+
+    async function syncSession(session) {
+        if (!API_URL) return;
+        try {
+            await apiPost({
+                action: 'saveFocusSession',
+                session: session
+            });
+            await apiPost({
+                action: 'saveFocusXP',
+                xpState: state
+            });
+        } catch (e) {
+            console.log('⚠️ Focus session sync failed:', e.message);
+        }
+    }
+
+    async function loadFromServer() {
+        if (!API_URL) return;
+        try {
+            const res = await apiGet({ action: 'getFocusData' });
+            if (!res.success) return;
+
+            // Merge XP: server wins if it has more totalXP
+            if (res.focusXP && res.focusXP.totalXP > state.totalXP) {
+                Object.assign(state, res.focusXP);
+                save();
+                updateUI();
+            }
+
+            // Merge focus history: combine & dedup by ID
+            if (res.focusHistory && res.focusHistory.length > 0) {
+                const local = JSON.parse(localStorage.getItem('habitflow_focus_history') || '[]');
+                const merged = [...local];
+                const localIds = new Set(local.map(h => h.id));
+
+                res.focusHistory.forEach(serverEntry => {
+                    if (!localIds.has(serverEntry.id)) {
+                        merged.push({
+                            id: serverEntry.id,
+                            mode: serverEntry.mode,
+                            duration: serverEntry.duration,
+                            points: serverEntry.points,
+                            date: serverEntry.date || serverEntry.createdAt,
+                            reward: serverEntry.reward
+                        });
+                    }
+                });
+
+                // Sort by date desc
+                merged.sort((a, b) => new Date(b.date) - new Date(a.date));
+                localStorage.setItem('habitflow_focus_history', JSON.stringify(merged));
+
+                // Refresh daily tracker
+                if (typeof DailyFocusTracker !== 'undefined') DailyFocusTracker.render();
+            }
+
+            console.log('✅ Focus data loaded from server');
+        } catch (e) {
+            console.log('⚠️ Focus load from server failed:', e.message);
+        }
+    }
+
+    function init() {
+        load();
+        updateUI();
+        // Load from server after a short delay (non-blocking)
+        setTimeout(() => loadFromServer(), 2000);
+    }
+
+    return { init, addXP, updateUI, getState, syncToServer, syncSession, loadFromServer };
+})();
+
+document.addEventListener('DOMContentLoaded', () => {
+    FocusXP.init();
+});
+
+// ============================================================
+// ⚡ FLOATING FOCUS MENU
+// ============================================================
+const FocusFloatMenu = (() => {
+    let isOpen = false;
+
+    function init() {
+        const toggle = document.getElementById('ffmToggle');
+        const items = document.getElementById('ffmItems');
+        if (!toggle || !items) return;
+
+        // Toggle expand/collapse
+        toggle.addEventListener('click', () => {
+            isOpen = !isOpen;
+            toggle.classList.toggle('open', isOpen);
+            items.classList.toggle('show', isOpen);
+        });
+
+        // Play/Pause
+        const playBtn = document.getElementById('ffmPlayPause');
+        if (playBtn) {
+            playBtn.addEventListener('click', () => {
+                document.getElementById('focusBtnStart')?.click();
+                syncPlayButton();
+            });
+        }
+
+        // Reset
+        const resetBtn = document.getElementById('ffmReset');
+        if (resetBtn) {
+            resetBtn.addEventListener('click', () => {
+                document.getElementById('focusBtnReset')?.click();
+                syncPlayButton();
+            });
+        }
+
+        // Scroll to section
+        document.querySelectorAll('.ffm-btn[data-scroll]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const target = document.querySelector('.' + btn.dataset.scroll);
+                if (target) {
+                    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+            });
+        });
+
+        // Ambient presets
+        document.querySelectorAll('.ffm-ambient').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const preset = btn.dataset.ambient;
+                if (typeof AmbientMixer !== 'undefined') {
+                    AmbientMixer.applyPreset(preset);
+                }
+                // Update active state
+                document.querySelectorAll('.ffm-ambient').forEach(b => b.classList.remove('active'));
+                if (preset !== 'off') {
+                    btn.classList.add('active');
+                }
+            });
+        });
+
+        // Periodically sync play button state
+        setInterval(syncPlayButton, 500);
+    }
+
+    function syncPlayButton() {
+        const mainBtn = document.getElementById('focusBtnStart');
+        const ffmPlay = document.getElementById('ffmPlayPause');
+        if (!mainBtn || !ffmPlay) return;
+
+        const isRunning = mainBtn.classList.contains('running');
+        ffmPlay.classList.toggle('running', isRunning);
+        const icon = ffmPlay.querySelector('i');
+        if (icon) {
+            icon.className = isRunning ? 'fa-solid fa-pause' : 'fa-solid fa-play';
+        }
+        const label = ffmPlay.querySelector('span');
+        if (label) {
+            label.textContent = isRunning ? 'Tạm dừng' : 'Bắt đầu';
+        }
+    }
+
+    return { init };
+})();
+
+document.addEventListener('DOMContentLoaded', () => {
+    FocusFloatMenu.init();
+    FocusFullscreen.init();
+});
+
+// ============================================================
+// 🖥️ FULLSCREEN FOCUS MODE
+// ============================================================
+const FocusFullscreen = (() => {
+    const FS_CIRCUMFERENCE = 2 * Math.PI * 140; // ~879.65
+    let particleCtx = null;
+    let particles = [];
+    let animFrame = null;
+    let isActive = false;
+
+    const QUOTES = [
+        '"The secret of getting ahead is getting started." — Mark Twain',
+        '"Focus on being productive instead of busy." — Tim Ferriss',
+        '"It is not enough to be busy, the question is: what are we busy about?" — Henry David Thoreau',
+        '"Do the hard jobs first. The easy jobs will take care of themselves." — Dale Carnegie',
+        '"Concentrate all your thoughts upon the work at hand." — Alexander Graham Bell',
+        '"The way to get started is to quit talking and begin doing." — Walt Disney',
+        '"Chất lượng không bao giờ là ngẫu nhiên, nó luôn là kết quả của nỗ lực." — John Ruskin',
+        '"Sự tập trung là chìa khóa của thành công." — Unknown',
+        '"Start where you are. Use what you have. Do what you can." — Arthur Ashe',
+        '"Your limitation—it\'s only your imagination."',
+    ];
+
+    function init() {
+        // Exit button
+        document.getElementById('fsExit')?.addEventListener('click', exit);
+
+        // ESC key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && isActive) exit();
+        });
+
+        // Play/Pause
+        document.getElementById('fsPlayBtn')?.addEventListener('click', () => {
+            document.getElementById('focusBtnStart')?.click();
+            setTimeout(() => syncPlayState(), 100);
+        });
+
+        // Reset
+        document.getElementById('fsResetBtn')?.addEventListener('click', () => {
+            document.getElementById('focusBtnReset')?.click();
+            exit();
+        });
+
+        // Skip
+        document.getElementById('fsSkipBtn')?.addEventListener('click', () => {
+            exit();
+        });
+
+        // ── SIDE PANEL TOGGLES ──
+        document.getElementById('fsMusicToggle')?.addEventListener('click', () => {
+            const panel = document.getElementById('fsMusicPanel');
+            const btn = document.getElementById('fsMusicToggle');
+            panel.classList.toggle('open');
+            btn.classList.toggle('active');
+            if (panel.classList.contains('open')) renderFsPlaylist();
+        });
+
+        document.getElementById('fsAmbientToggle')?.addEventListener('click', () => {
+            const panel = document.getElementById('fsAmbientPanel');
+            const btn = document.getElementById('fsAmbientToggle');
+            panel.classList.toggle('open');
+            btn.classList.toggle('active');
+            if (panel.classList.contains('open')) renderFsAmbientState();
+        });
+
+        // ── FS AMBIENT SOUND TOGGLES ──
+        document.querySelectorAll('.fs-amb-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const sound = btn.dataset.fsSound;
+                if (typeof AmbientMixer !== 'undefined') {
+                    AmbientMixer.toggleSound(sound);
+                    // Also sync main page toggle
+                    const mainChannel = document.querySelector(`.ambient-channel[data-sound="${sound}"]`);
+                    if (mainChannel) mainChannel.classList.toggle('active');
+                }
+                btn.classList.toggle('active');
+            });
+        });
+
+        // ── FS AMBIENT PRESETS ──
+        document.querySelectorAll('.fs-amb-preset').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const preset = btn.dataset.fsPreset;
+                if (typeof AmbientMixer !== 'undefined') {
+                    AmbientMixer.applyPreset(preset);
+                }
+                document.querySelectorAll('.fs-amb-preset').forEach(b => b.classList.remove('active'));
+                if (preset !== 'off') btn.classList.add('active');
+                // Sync ambient button states after delay
+                setTimeout(() => renderFsAmbientState(), 500);
+            });
+        });
+
+        // ── FS AMBIENT VOLUME ──
+        const fsVol = document.getElementById('fsAmbientVol');
+        if (fsVol) {
+            fsVol.addEventListener('input', () => {
+                const val = fsVol.value;
+                document.getElementById('fsAmbientVolPct').textContent = val + '%';
+                if (typeof AmbientMixer !== 'undefined') {
+                    AmbientMixer.setMasterVolume(val);
+                    // Sync main page master vol
+                    const mainVol = document.getElementById('ambientMasterVol');
+                    if (mainVol) mainVol.value = val;
+                    const mainPct = document.getElementById('ambientMasterPct');
+                    if (mainPct) mainPct.textContent = val + '%';
+                }
+            });
+        }
+
+        // Periodic sync every 1s
+        setInterval(() => {
+            if (!isActive) return;
+            syncNowPlaying();
+        }, 2000);
+    }
+
+    function enter(mode, config, timeLeft, totalTime) {
+        isActive = true;
+        const el = document.getElementById('focusFullscreen');
+        el.classList.add('active');
+        document.body.style.overflow = 'hidden';
+
+        // Set mode label
+        const label = document.getElementById('fsModeLabel');
+        label.querySelector('span').textContent = config.label;
+
+        // Set quote
+        document.getElementById('fsQuote').textContent = QUOTES[Math.floor(Math.random() * QUOTES.length)];
+
+        // Sync timer
+        syncTimer(timeLeft, totalTime, true);
+        syncPlayState();
+
+        // Sync now playing music
+        syncNowPlaying();
+
+        // Init particles
+        initParticles();
+
+        // Render dots
+        renderFsDots();
+
+        // Render side panels content
+        renderFsPlaylist();
+        renderFsAmbientState();
+    }
+
+    function exit() {
+        isActive = false;
+        const el = document.getElementById('focusFullscreen');
+        el.classList.remove('active');
+        document.body.style.overflow = '';
+        if (animFrame) cancelAnimationFrame(animFrame);
+        animFrame = null;
+
+        // Close side panels
+        document.getElementById('fsMusicPanel')?.classList.remove('open');
+        document.getElementById('fsAmbientPanel')?.classList.remove('open');
+        document.getElementById('fsMusicToggle')?.classList.remove('active');
+        document.getElementById('fsAmbientToggle')?.classList.remove('active');
+    }
+
+    function syncTimer(timeLeft, totalTime, running) {
+        if (!isActive) return;
+
+        // Update time display
+        const min = Math.floor(timeLeft / 60);
+        const sec = timeLeft % 60;
+        const el = document.getElementById('fsTimeDisplay');
+        if (el) el.textContent = `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+
+        // Update ring
+        const fraction = totalTime > 0 ? timeLeft / totalTime : 1;
+        const offset = FS_CIRCUMFERENCE * (1 - fraction);
+        const progress = document.getElementById('fsTimerProgress');
+        const glow = document.getElementById('fsTimerGlow');
+        if (progress) progress.style.strokeDashoffset = offset;
+        if (glow) glow.style.strokeDashoffset = offset;
+
+        // Update subtitle
+        const sub = document.getElementById('fsSubtitle');
+        if (sub) {
+            if (timeLeft > 0) {
+                sub.textContent = running ? 'Stay focused' : 'Paused';
+            } else {
+                sub.textContent = 'Complete!';
+            }
+        }
+    }
+
+    function syncPlayState() {
+        const mainBtn = document.getElementById('focusBtnStart');
+        const fsBtn = document.getElementById('fsPlayBtn');
+        if (!mainBtn || !fsBtn) return;
+
+        const running = mainBtn.classList.contains('running');
+        fsBtn.querySelector('i').className = running ? 'fa-solid fa-pause' : 'fa-solid fa-play';
+        fsBtn.classList.toggle('paused', !running);
+    }
+
+    function syncNowPlaying() {
+        const musicNP = document.getElementById('musicNowPlaying');
+        const fsNP = document.getElementById('fsNowPlaying');
+        const fsText = document.getElementById('fsNowPlayingText');
+        if (!musicNP || !fsNP || !fsText) return;
+
+        if (musicNP.style.display !== 'none') {
+            fsNP.style.display = 'flex';
+            fsText.textContent = document.getElementById('musicNowPlayingName')?.textContent || 'Đang phát nhạc...';
+        } else {
+            fsNP.style.display = 'none';
+        }
+    }
+
+    function renderFsDots() {
+        const container = document.getElementById('fsDots');
+        if (!container) return;
+        // Simple session dots: get from main timer sessions done
+        const sessionEl = document.getElementById('focusSessionsDone');
+        const goalEl = document.getElementById('focusSessionsGoal');
+        const done = parseInt(sessionEl?.textContent || '0');
+        const goal = parseInt(goalEl?.textContent || '4');
+
+        let html = '';
+        for (let i = 0; i < goal; i++) {
+            if (i < done) {
+                html += '<div class="focus-fs-dot done"></div>';
+            } else if (i === done) {
+                html += '<div class="focus-fs-dot current"></div>';
+            } else {
+                html += '<div class="focus-fs-dot"></div>';
+            }
+        }
+        container.innerHTML = html;
+    }
+
+    // ── PARTICLES ──
+    function initParticles() {
+        const canvas = document.getElementById('focusParticles');
+        if (!canvas) return;
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        particleCtx = canvas.getContext('2d');
+
+        particles = [];
+        const count = 60;
+        for (let i = 0; i < count; i++) {
+            particles.push({
+                x: Math.random() * canvas.width,
+                y: Math.random() * canvas.height,
+                r: Math.random() * 2 + 0.5,
+                dx: (Math.random() - 0.5) * 0.3,
+                dy: (Math.random() - 0.5) * 0.2,
+                opacity: Math.random() * 0.3 + 0.05,
+                color: ['#06b6d4', '#8b5cf6', '#10b981', '#f59e0b'][Math.floor(Math.random() * 4)],
+            });
+        }
+
+        animateParticles();
+
+        window.addEventListener('resize', () => {
+            if (!isActive) return;
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        });
+    }
+
+    function animateParticles() {
+        if (!isActive || !particleCtx) return;
+        const canvas = particleCtx.canvas;
+        particleCtx.clearRect(0, 0, canvas.width, canvas.height);
+
+        particles.forEach(p => {
+            p.x += p.dx;
+            p.y += p.dy;
+
+            if (p.x < 0) p.x = canvas.width;
+            if (p.x > canvas.width) p.x = 0;
+            if (p.y < 0) p.y = canvas.height;
+            if (p.y > canvas.height) p.y = 0;
+
+            particleCtx.beginPath();
+            particleCtx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+            particleCtx.fillStyle = p.color;
+            particleCtx.globalAlpha = p.opacity;
+            particleCtx.fill();
+        });
+
+        particleCtx.globalAlpha = 1;
+        animFrame = requestAnimationFrame(animateParticles);
+    }
+
+    // ── FS PLAYLIST RENDER ──
+    function renderFsPlaylist() {
+        const container = document.getElementById('fsPlaylist');
+        if (!container || typeof FocusMusic === 'undefined') return;
+
+        const playlist = FocusMusic.getPlaylist();
+        const currentId = FocusMusic.getCurrentTrackId();
+
+        if (playlist.length === 0) {
+            container.innerHTML = '<div class="fs-playlist-empty">Chưa có bài nhạc nào.<br>Thêm nhạc ở trang chính.</div>';
+            return;
+        }
+
+        container.innerHTML = playlist.map(track => `
+            <div class="fs-track ${track.id === currentId ? 'playing' : ''}" onclick="FocusMusic.play('${track.id}'); setTimeout(() => document.getElementById('fsMusicPanel')?.classList.contains('open') && FocusFullscreen.renderPlaylist(), 200);">
+                <div class="fs-track-icon">
+                    <i class="fa-solid ${track.id === currentId ? 'fa-pause' : 'fa-play'}"></i>
+                </div>
+                <div class="fs-track-name">${track.name}</div>
+            </div>
+        `).join('');
+    }
+
+    // ── FS AMBIENT STATE SYNC ──
+    function renderFsAmbientState() {
+        if (typeof AmbientMixer === 'undefined') return;
+        const activeChannels = AmbientMixer.getActiveChannels();
+
+        document.querySelectorAll('.fs-amb-btn').forEach(btn => {
+            const sound = btn.dataset.fsSound;
+            btn.classList.toggle('active', activeChannels.includes(sound));
+        });
+    }
+
+    return { init, enter, exit, syncTimer, renderPlaylist: renderFsPlaylist };
+})();
